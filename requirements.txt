@@ -8,6 +8,10 @@ mlflow==3.16.1
 boto3==1.43.8
 PyYAML==6.0.3
 python-dotenv==1.2.4
+fastapi==0.142.2
+pydantic==2.13.5
+uvicorn==0.54.0
 
-# tests
+# tests and the API benchmark
 pytest==9.1.1
+httpx==0.28.1

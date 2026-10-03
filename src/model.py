@@ -134,6 +134,14 @@ class BlendRecommender(Recommender):
     def _recommend_rows(self, rows: np.ndarray, n: int) -> np.ndarray:
         return self.svd.recommend(self.liked[rows], self.seen[rows], n)
 
+    def _fold_in(self, columns: np.ndarray, n: int) -> np.ndarray:
+        # The same scoring as for a known user whose liked (and rated) movies are exactly `columns`.
+        shape = (1, len(self.item_ids))
+        index = (np.zeros(len(columns), dtype=np.int64), columns)
+        liked = sparse.csr_matrix((np.ones(len(columns), dtype=np.float32), index), shape=shape)
+        seen = sparse.csr_matrix((np.ones(len(columns), dtype=np.int8), index), shape=shape)
+        return self.svd.recommend(liked, seen, n)[0]
+
     def _extra_arrays(self) -> Dict[str, np.ndarray]:
         arrays = {"V": self.svd.item_factors, "blend_weight": np.array(self.svd.blend_weight),
                   **pack_csr("liked", self.liked)}

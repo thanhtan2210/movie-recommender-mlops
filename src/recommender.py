@@ -7,7 +7,7 @@ not in the training data gets the popularity list (cold-start fallback).
 NO_RECOMMENDATION fills the slots of a user with fewer than n movies left.
 """
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import mlflow.pyfunc
 import numpy as np
@@ -62,6 +62,34 @@ class Recommender(mlflow.pyfunc.PythonModel):
     def recommend(self, user_ids, n: int = 10) -> np.ndarray:
         columns = self.recommend_columns(user_ids, n)
         return np.where(columns == NO_RECOMMENDATION, NO_RECOMMENDATION, self.item_ids[np.maximum(columns, 0)])
+
+    # ------------------------------------------------------------ anonymous users
+
+    def _fold_in(self, columns: np.ndarray, n: int) -> Optional[np.ndarray]:
+        """Top-n movie columns for someone who liked `columns`, or None if the model cannot personalise."""
+        return None
+
+    def recommend_for_liked(self, movie_ids, n: int = 10) -> Tuple[np.ndarray, List[int], bool]:
+        """Recommendations for a user who is not in the training data but tells us what they liked.
+
+        Returns (movieIds best first, the given ids that are not in the catalogue,
+        whether the result is personalised). The liked movies themselves are never
+        returned. With no usable id, or a model that cannot personalise, the
+        popularity ranking is used.
+        """
+        wanted = list(dict.fromkeys(int(movie_id) for movie_id in movie_ids))  # unique, order kept
+        positions = np.minimum(np.searchsorted(self.item_ids, wanted), len(self.item_ids) - 1) if wanted else np.array([], dtype=int)
+        in_catalog = self.item_ids[positions] == np.array(wanted) if wanted else np.array([], dtype=bool)
+        columns = np.asarray(positions)[in_catalog].astype(np.int64)
+        ignored = [movie_id for movie_id, known in zip(wanted, in_catalog) if not known]
+
+        picked = self._fold_in(columns, n) if len(columns) else None
+        personalised = picked is not None
+        if picked is None:
+            ranking = self.popularity_ranking[~np.isin(self.popularity_ranking, columns)]
+            picked = ranking[:n]
+        picked = picked[picked != NO_RECOMMENDATION]
+        return self.item_ids[picked], ignored, personalised
 
     # ------------------------------------------------------------ state on disk
 
