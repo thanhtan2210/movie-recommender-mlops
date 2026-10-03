@@ -1,12 +1,11 @@
 import os
-import shutil
 
-import boto3
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from src.serving import storage
 from src.serving.chatbot import MovieChatbot, set_search_engine
 from src.serving.semantic_search import SemanticSearchEngine
 
@@ -14,8 +13,6 @@ st.set_page_config(page_title="Movie Recommender", page_icon="🎬", layout="wid
 
 CHART_COLOR = "#636EFA"
 TOP_K = 10
-DB_PATH = "lancedb_movies"
-DB_ZIP = "lancedb_movies.zip"
 
 
 # ==========================================
@@ -23,34 +20,21 @@ DB_ZIP = "lancedb_movies.zip"
 # ==========================================
 
 
-def get_s3_client():
-    return boto3.client('s3',
-                        endpoint_url=os.environ.get('AWS_ENDPOINT_URL'),
-                        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-                        aws_secret_access_key=os.environ.get(
-                            'AWS_SECRET_ACCESS_KEY')
-                        )
-
-
 @st.cache_resource
 def init_lancedb():
     """Download the vector database from Cloudflare R2 (first run only)."""
-    if not os.path.exists(DB_PATH):
-        if not os.environ.get('AWS_ACCESS_KEY_ID'):
+    if not os.path.exists(storage.DB_PATH):
+        if not storage.has_r2_credentials():
             st.warning("R2 environment variables are missing. Check your .env file.")
             return None
 
         try:
-            s3 = get_s3_client()
-            bucket = os.environ.get('S3_BUCKET_NAME', 'movie-mlops')
-            s3.download_file(bucket, DB_ZIP, DB_ZIP)
-            shutil.unpack_archive(DB_ZIP, DB_PATH)
-            os.remove(DB_ZIP)
+            storage.download_database()
         except Exception as e:
             st.error(f"Could not download the database from R2: {e}")
             return None
 
-    engine = SemanticSearchEngine(lancedb_uri=DB_PATH)
+    engine = SemanticSearchEngine(lancedb_uri=storage.DB_PATH)
     engine.load_table()
     engine.load_model()
     return engine

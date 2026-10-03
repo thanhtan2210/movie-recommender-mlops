@@ -71,7 +71,8 @@ class SemanticSearchEngine:
         df = self.table.to_pandas()
         self._vectors = np.vstack(df["vector"].to_numpy()).astype(np.float32)
         self._row_of = {int(movie_id): row for row, movie_id in enumerate(df["movieId"])}
-        self.catalog = df.drop(columns=["vector"]).set_index("movieId", drop=False)
+        # The index is unnamed so that "movieId" still refers to the column only.
+        self.catalog = df.drop(columns=["vector"]).set_index("movieId", drop=False).rename_axis(None)
 
     def _ensure_loaded(self):
         if self.table is None or self.catalog is None:

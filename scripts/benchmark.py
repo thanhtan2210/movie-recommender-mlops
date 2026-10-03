@@ -1,138 +1,186 @@
-import os
-import time
-import numpy as np
-import pandas as pd
-import lancedb
-from src.serving.semantic_search import Reranker
+"""Latency benchmark of a text query on the real database.
 
-def run_benchmark():
-    db_uri = "notebooks/tmp_lancedb"
-    print(f"Connecting to existing database at: {db_uri}")
-    
-    if not os.path.exists(db_uri):
-        print(f"Error: Database directory {db_uri} not found. Please run notebooks or streamlit app first.")
-        return
-        
-    db = lancedb.connect(db_uri)
-    tables = db.table_names()
-    print(f"Found tables: {tables}")
-    
-    # Prefer 'movies_real' if present, otherwise fallback to 'movies'
-    table_name = "movies_real" if "movies_real" in tables else "movies"
-    if table_name not in tables:
-        print(f"Error: Table 'movies' or 'movies_real' not found in {db_uri}.")
-        return
-        
-    print(f"Using table '{table_name}' for benchmark...")
-    table = db.open_table(table_name)
-    num_rows = table.count_rows()
-    print(f"Table contains {num_rows} records.")
-    
-    # Dynamically check vector dimension
-    first_batch = table.head(1)
-    vector_data = first_batch['vector'].to_pylist()
-    if not vector_data or len(vector_data[0]) == 0:
-        print("Error: Could not retrieve vector dimension from table.")
-        return
-    dim = len(vector_data[0])
-    print(f"Detected vector dimension: {dim}")
-    
-    # Warm-up queries
-    print("Warming up database connection...")
-    for _ in range(10):
-        q = np.random.rand(dim).tolist()
-        table.search(q).metric("cosine").limit(20).to_pandas()
-        
-    num_queries = 100
-    search_latencies = []
-    rerank_latencies = []
-    total_latencies = []
-    
-    print(f"Running {num_queries} queries for benchmark...")
-    for _ in range(num_queries):
-        # Generate random query vector of matching dimension (unit vector)
-        vec = np.random.rand(dim).astype(np.float32)
-        query_vector = (vec / np.linalg.norm(vec)).tolist()
-        
-        # Measure LanceDB search latency
-        t0 = time.perf_counter()
-        results_df = table.search(query_vector).metric("cosine").limit(20).to_pandas()
-        t1 = time.perf_counter()
-        
-        # Measure Rerank latency
-        candidates = []
-        for _, row in results_df.iterrows():
-            candidates.append({
-                "movie_id": int(row.get("movieId", row.get("movie_id", 0))),
-                "title": str(row.get("title", "Unknown")),
-                "genres": str(row.get("genres", "")),
-                "overview": str(row.get("overview", "")),
-                "poster_path": str(row.get("poster_path", "")),
-                "avg_rating": float(row.get("avg_rating", 0.0)),
-                "rating_count": int(row.get("rating_count", 0)),
-                "similarity_score": round(1.0 - row["_distance"], 4) if "_distance" in row else 0.5
-            })
-            
-        t2 = time.perf_counter()
-        Reranker.rerank(candidates)
-        t3 = time.perf_counter()
-        
-        search_latencies.append((t1 - t0) * 1000)
-        rerank_latencies.append((t3 - t2) * 1000)
-        total_latencies.append((t3 - t0) * 1000)
-        
-    # Calculate statistics
-    def get_stats(latencies):
-        return {
-            "mean": np.mean(latencies),
-            "p50": np.percentile(latencies, 50),
-            "p95": np.percentile(latencies, 95),
-            "p99": np.percentile(latencies, 99)
-        }
-        
-    search_stats = get_stats(search_latencies)
-    rerank_stats = get_stats(rerank_latencies)
-    total_stats = get_stats(total_latencies)
-    
-    print("\n" + "="*50)
-    print(f"LANCEDB BENCHMARK RESULTS ({num_rows} records, {dim}D)")
-    print("="*50)
-    print(f"Operation          | Mean (ms) | P50 (ms) | P95 (ms) | P99 (ms)")
-    print("-"*50)
-    print(f"LanceDB Raw Search | {search_stats['mean']:9.2f} | {search_stats['p50']:8.2f} | {search_stats['p95']:8.2f} | {search_stats['p99']:8.2f}")
-    print(f"Reranking Layer    | {rerank_stats['mean']:9.2f} | {rerank_stats['p50']:8.2f} | {rerank_stats['p95']:8.2f} | {rerank_stats['p99']:8.2f}")
-    print(f"End-to-End Search  | {total_stats['mean']:9.2f} | {total_stats['p50']:8.2f} | {total_stats['p95']:8.2f} | {total_stats['p99']:8.2f}")
-    print("="*50 + "\n")
-    
-    # Save results to docs/benchmark_results.md
-    docs_dir = "docs"
-    os.makedirs(docs_dir, exist_ok=True)
-    benchmark_file = os.path.join(docs_dir, "benchmark_results.md")
-    
-    timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
-    
-    markdown_content = f"""# LanceDB Vector Search Benchmarks
+Each of the 200 queries in scripts/benchmark_queries.txt goes through the
+same steps as SemanticSearchEngine.search_by_description: embedding, LanceDB
+search, rerank, output validation. Each step is timed separately. The cold
+start (download, unpack, model load, table load) is timed once.
 
-- **Run Timestamp:** {timestamp}
-- **Dataset Size:** {num_rows:,} records
-- **Vector Dimension:** {dim}D
-- **Number of Trials:** {num_queries} queries
+The LLM call to Groq is not measured: it depends on the network and quota.
 
-## Performance Metrics
-
-| Operation | Mean Latency (ms) | P50 Latency (ms) | P95 Latency (ms) | P99 Latency (ms) |
-| :--- | :---: | :---: | :---: | :---: |
-| **LanceDB Raw Search** | {search_stats['mean']:.2f} | {search_stats['p50']:.2f} | {search_stats['p95']:.2f} | {search_stats['p99']:.2f} |
-| **Reranking Layer** | {rerank_stats['mean']:.2f} | {rerank_stats['p50']:.2f} | {rerank_stats['p95']:.2f} | {rerank_stats['p99']:.2f} |
-| **End-to-End Vector Retrieve** | {total_stats['mean']:.2f} | {total_stats['p50']:.2f} | {total_stats['p95']:.2f} | {total_stats['p99']:.2f} |
-
----
-*Note: Benchmarks were run using the pre-existing database table '{table_name}' in '{db_uri}'.*
+Run from the repo root:  python -m scripts.benchmark
+Writes reports/latency.json.
 """
-    with open(benchmark_file, "w", encoding="utf-8") as f:
-        f.write(markdown_content)
-        
-    print(f"Results successfully saved to {benchmark_file}")
+import argparse
+import ctypes
+import json
+import os
+import platform
+import shutil
+import sys
+import tempfile
+import time
+from importlib import metadata
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+from dotenv import load_dotenv
+
+from src.serving import storage
+from src.serving.semantic_search import Reranker, SemanticSearchEngine
+
+REPORT_DIR = "reports"
+LATENCY_PATH = os.path.join(REPORT_DIR, "latency.json")
+QUERIES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "benchmark_queries.txt")
+TOP_K = 10
+WARMUP_QUERIES = 5
+STEPS = ["embedding", "search", "rerank", "validation", "total"]
+
+
+def load_queries(path: str = QUERIES_PATH) -> List[str]:
+    with open(path, encoding="utf-8") as f:
+        return [line.strip() for line in f if line.strip()]
+
+
+def timed_query(engine: SemanticSearchEngine, query: str, top_k: int = TOP_K):
+    """Run one query step by step; returns (results, seconds per step).
+
+    Mirrors search_by_description with the reranker on. A test checks that
+    both return the same results.
+    """
+    t0 = time.perf_counter()
+    vector = engine.embed_query(query)
+    t1 = time.perf_counter()
+    candidates = engine.retrieve_candidates(vector, top_k * 2)
+    t2 = time.perf_counter()
+    ranked = Reranker.rerank(candidates)[:top_k]
+    t3 = time.perf_counter()
+    results = engine._validate_candidates(ranked, "rerank")
+    t4 = time.perf_counter()
+    return results, {"embedding": t1 - t0, "search": t2 - t1, "rerank": t3 - t2,
+                     "validation": t4 - t3, "total": t4 - t0}
+
+
+def summarise(seconds: List[float]) -> Dict[str, float]:
+    ms = np.asarray(seconds) * 1000
+    return {"p50_ms": float(np.percentile(ms, 50)), "p95_ms": float(np.percentile(ms, 95)),
+            "mean_ms": float(ms.mean())}
+
+
+def run_queries(engine: SemanticSearchEngine, queries: List[str], warmup: int = WARMUP_QUERIES) -> Dict[str, Any]:
+    for query in queries[:warmup]:
+        timed_query(engine, query)
+    timings: Dict[str, List[float]] = {step: [] for step in STEPS}
+    for query in queries:
+        _, seconds = timed_query(engine, query)
+        for step in STEPS:
+            timings[step].append(seconds[step])
+    return {step: summarise(values) for step, values in timings.items()}
+
+
+def total_ram_gb() -> Optional[float]:
+    try:
+        if sys.platform == "win32":
+            class MemoryStatus(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            status = MemoryStatus()
+            status.dwLength = ctypes.sizeof(MemoryStatus)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
+            return round(status.ullTotalPhys / 1024 ** 3, 1)
+        return round(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1024 ** 3, 1)
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def version_of(package: str) -> Optional[str]:
+    try:
+        return metadata.version(package)
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def machine_info() -> Dict[str, Any]:
+    return {
+        "platform": platform.platform(),
+        "processor": platform.processor(),
+        "cpu_count": os.cpu_count(),
+        "ram_gb": total_ram_gb(),
+        "python": platform.python_version(),
+        "device": "cpu",
+        "versions": {name: version_of(name) for name in ("lancedb", "sentence-transformers", "torch", "pandas")},
+    }
+
+
+def cold_start(db_path: str) -> Dict[str, Any]:
+    """Time what a cold start does, once. Returns the timings and a ready engine."""
+    timings: Dict[str, Any] = {"download_s": None, "unpack_s": None}
+    if storage.has_r2_credentials():
+        # Download into a scratch directory so the measurement does not depend
+        # on (or disturb) a database that is already on disk.
+        workdir = tempfile.mkdtemp(prefix="coldstart_")
+        zip_path = os.path.join(workdir, storage.DB_ZIP)
+        db_path = os.path.join(workdir, storage.DB_PATH)
+        t0 = time.perf_counter()
+        storage.download_object(storage.DB_ZIP, zip_path)
+        t1 = time.perf_counter()
+        shutil.unpack_archive(zip_path, db_path)
+        t2 = time.perf_counter()
+        timings.update(download_s=t1 - t0, unpack_s=t2 - t1, zip_size_mb=os.path.getsize(zip_path) / 1024 ** 2)
+    else:
+        timings["note"] = "no R2 credentials: download and unpack were not measured"
+
+    engine = SemanticSearchEngine(lancedb_uri=db_path)
+    t0 = time.perf_counter()
+    engine.load_model()
+    t1 = time.perf_counter()
+    engine.load_table()
+    t2 = time.perf_counter()
+    timings.update(load_model_s=t1 - t0, load_table_s=t2 - t1)
+    measured = [timings[k] for k in ("download_s", "unpack_s", "load_model_s", "load_table_s") if timings[k] is not None]
+    timings["total_measured_s"] = float(sum(measured))
+    return {"timings": timings, "engine": engine}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--db", default=storage.DB_PATH, help="LanceDB directory used when R2 is not configured")
+    args = parser.parse_args()
+    load_dotenv()
+
+    if not storage.has_r2_credentials() and not os.path.exists(args.db):
+        raise SystemExit(f"{args.db} not found and no R2 credentials are set: nothing to benchmark.")
+
+    queries = load_queries()
+    started = cold_start(args.db)
+    engine = started["engine"]
+    print(f"Cold start: {json.dumps(started['timings'], indent=2)}")
+
+    print(f"Running {len(queries)} queries ({WARMUP_QUERIES} warm-up queries first)...")
+    latency = run_queries(engine, queries)
+    for step in STEPS:
+        s = latency[step]
+        print(f"  {step:<10} p50 {s['p50_ms']:8.2f} ms | p95 {s['p95_ms']:8.2f} ms | mean {s['mean_ms']:8.2f} ms")
+
+    report = {
+        "database": {"movies": int(len(engine.catalog)), "vector_dimension": int(engine._vectors.shape[1])},
+        "queries": len(queries),
+        "warmup_queries": WARMUP_QUERIES,
+        "top_k": TOP_K,
+        "candidates": TOP_K * 2,
+        "not_measured": "the Groq LLM call (network and quota dependent)",
+        "latency": latency,
+        "cold_start": started["timings"],
+        "machine": machine_info(),
+    }
+    os.makedirs(REPORT_DIR, exist_ok=True)
+    with open(LATENCY_PATH, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+        f.write("\n")
+    print(f"Saved {LATENCY_PATH}")
+
 
 if __name__ == "__main__":
-    run_benchmark()
+    main()

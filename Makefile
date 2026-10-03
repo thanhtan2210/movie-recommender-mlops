@@ -1,6 +1,6 @@
 # Makefile for Big-Data-MLOps-System
 
-.PHONY: install test lint format run benchmark clean
+.PHONY: install test lint format run benchmark evaluate clean
 
 install:
 	.venv\Scripts\pip install -r requirements.txt
@@ -18,7 +18,10 @@ run:
 	.venv\Scripts\streamlit run app.py
 
 benchmark:
-	.venv\Scripts\python scripts/benchmark.py
+	.venv\Scripts\python -m scripts.benchmark
+
+evaluate:
+	.venv\Scripts\python -m scripts.evaluate_offline
 
 clean:
 	@echo Cleaning cache files...
