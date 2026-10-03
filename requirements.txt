@@ -1,6 +1,8 @@
 pandas==2.2.0
 numpy==1.26.4
 pyarrow==25.0.1
+scipy==1.17.1
+scikit-learn==1.9.1
 boto3==1.43.8
 PyYAML==6.0.3
 python-dotenv==1.2.4

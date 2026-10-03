@@ -250,8 +250,10 @@ def write_parquet(frame: pd.DataFrame, path: str) -> None:
 def git_state() -> Dict[str, Any]:
     try:
         commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
-        dirty = bool(subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True,
-                                    check=True).stdout.strip())
+        # Tracked files only, and not the generated reports: the flag is about the code that ran.
+        dirty = bool(subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no", "--", ".", ":(exclude)reports"],
+            capture_output=True, text=True, check=True).stdout.strip())
         return {"git_commit": commit, "git_uncommitted_changes": dirty}
     except (OSError, subprocess.CalledProcessError):
         return {"git_commit": None, "git_uncommitted_changes": None}

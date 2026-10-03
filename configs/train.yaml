@@ -1,0 +1,3 @@
+k_values: [32, 64, 128, 256]  # numbers of latent factors compared on the validation window
+validation_days: 31           # validation = the last 31 days of train (2019-05-01 .. 2019-05-31 for cutoff 2019-06-01)
+random_state: 42
