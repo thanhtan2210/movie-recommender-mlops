@@ -127,19 +127,6 @@ def test_search_similar_movies_by_title_not_found(mock_search_engine):
     with pytest.raises(ValueError, match="Không tìm thấy phim"):
         mock_search_engine.search_similar_movies_by_title("Avengers")
 
-def test_get_movies_by_decade(mock_search_engine):
-    # No years in titles in our fixture, expect empty list
-    results = mock_search_engine.get_movies_by_decade("1990s")
-    assert len(results) == 0
-
-def test_compare_movies(mock_search_engine):
-    res = mock_search_engine.compare_movies("Matrix", "Inception")
-    
-    assert "movie_1" in res
-    assert "movie_2" in res
-    assert "cosine_similarity" in res
-    assert isinstance(res["cosine_similarity"], float)
-
 def test_get_user_vector_and_personalized_recommend(mock_search_engine):
     user_ratings = {1: 4.0, 2: 5.0}
     user_vec = mock_search_engine.get_user_vector(user_ratings)

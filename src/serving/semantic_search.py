@@ -158,35 +158,6 @@ class SemanticSearchEngine:
             return self._validate_candidates(res, "rerank")
         return self._validate_candidates(candidates[:top_k], "record")
 
-    def get_movies_by_decade(self, decade: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        if self.table is None:
-            self.load_table()
-        df = self.table.to_pandas()
-        df_filtered = df[df['title'].str.contains(f"({decade[:2]}", regex=False, na=False)]
-        df_sorted = df_filtered.sort_values(by="rating_count", ascending=False).head(top_k)
-        return [self._format_result(row) for _, row in df_sorted.iterrows()]
-
-    def compare_movies(self, title1: str, title2: str) -> Dict[str, Any]:
-        if self.table is None:
-            self.load_table()
-        df = self.table.to_pandas()
-        
-        # Tìm kiếm phim theo tên (không phân biệt hoa thường)
-        m1 = df[df["title"].str.lower().str.contains(title1.lower(), na=False)].head(1)
-        m2 = df[df["title"].str.lower().str.contains(title2.lower(), na=False)].head(1)
-        
-        if m1.empty or m2.empty: 
-            return {"error": f"Không tìm thấy phim: {title1 if m1.empty else title2}"}
-        
-        vec1, vec2 = np.array(m1.iloc[0]["vector"]), np.array(m2.iloc[0]["vector"])
-        similarity = np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
-        
-        return {
-            "movie_1": self._format_result(m1.iloc[0]),
-            "movie_2": self._format_result(m2.iloc[0]),
-            "cosine_similarity": float(similarity)
-        }
-
     def get_trending_by_rating(self, min_rating: float, min_votes: int, top_k: int = 5) -> List[Dict[str, Any]]:
         if self.table is None:
             self.load_table()

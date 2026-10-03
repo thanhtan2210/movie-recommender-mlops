@@ -22,7 +22,14 @@ Thumbs.db
 .vscode/
 .idea/
 
-.pytest_cache.
 .env
 .pytest_cache/
 big_data_mlops_system.egg-info
+
+# Vector database: downloaded from R2 at runtime, never committed
+lancedb_movies/
+lancedb_movies.zip
+notebooks/tmp_lancedb/
+
+# Runtime logs
+logs/
