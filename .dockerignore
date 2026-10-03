@@ -1,0 +1,19 @@
+# Secrets and local state never go into the build context
+.env
+.venv/
+mlflow.db
+mlruns/
+
+# Data and training output: the image only needs serving_model/
+data/
+artifacts/
+
+# Not needed to serve
+tests/
+reports/
+docs/
+.git/
+.github/
+.pytest_cache/
+.ruff_cache/
+**/__pycache__/
