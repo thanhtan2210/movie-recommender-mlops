@@ -24,3 +24,6 @@ artifacts/
 
 # Local MLflow store (used when DagsHub is not configured)
 mlflow.db
+
+# The exported champion, copied into the Docker image at build time
+serving_model/
