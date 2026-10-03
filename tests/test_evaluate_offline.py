@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from scripts import evaluate_offline as ev
-from tests.conftest import MOVIES
+from tests.conftest import MOVIES, write_synthetic_ratings
 
 CATALOG_IDS = np.array(sorted(m[0] for m in MOVIES))
 
@@ -181,13 +181,8 @@ def test_popularity_only_weight_ranks_the_pool_by_rating_count(engine):
 @pytest.fixture
 def small_run(lancedb_dir, tmp_path, monkeypatch):
     """Run main() on the fixture database with a handful of synthetic users."""
-    movie_ids = [int(m) for m in CATALOG_IDS]
-    rows = []
-    for user in range(1, 7):
-        for step, movie_id in enumerate(movie_ids[user % 3:user % 3 + 6]):
-            rows.append((user, movie_id, 5.0 if step % 2 == 0 else 4.0, 1000 + step))
     ratings_path = tmp_path / "ratings.csv"
-    ratings_frame(rows).to_csv(ratings_path, index=False)
+    write_synthetic_ratings(ratings_path)
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(ev, "MIN_LIKED", 3)

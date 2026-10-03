@@ -8,7 +8,8 @@ import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 from src.serving import chatbot
-from tests.conftest import DummyModel, create_movies_table
+from scripts import benchmark, evaluate_offline
+from tests.conftest import DummyModel, create_movies_table, write_synthetic_ratings
 
 APP_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 
@@ -38,6 +39,40 @@ def test_app_opens_with_three_tabs(app):
     assert [tab.label for tab in app.tabs] == ["Recommend", "Chat", "Evaluation"]
     # Without a Groq key the Chat tab explains itself instead of crashing.
     assert any("Groq API key" in info.value for info in app.info)
+
+
+def test_evaluation_tab_hides_sections_when_reports_are_missing(app):
+    app.run()
+
+    assert not app.exception
+    subheaders = [s.value for s in app.subheader]
+    assert "The catalogue" in subheaders
+    assert not any("Offline evaluation" in s or "Latency" in s for s in subheaders)
+    assert any("No evaluation reports yet" in info.value for info in app.info)
+
+
+def test_evaluation_tab_shows_generated_reports(app, tmp_path, monkeypatch):
+    """Reports written by the two scripts are what the tab reads."""
+    write_synthetic_ratings(tmp_path / "ratings.csv")
+    monkeypatch.setattr(evaluate_offline, "MIN_LIKED", 3)
+    monkeypatch.setattr(evaluate_offline, "N_USERS", 4)
+    monkeypatch.setattr(evaluate_offline, "N_CANDIDATES", 5)
+    monkeypatch.setattr(evaluate_offline, "SUSPICIOUS_HIT_RATE", 1.1)
+    monkeypatch.setattr(sys, "argv", ["evaluate_offline", "--db", "lancedb_movies", "--ratings", "ratings.csv"])
+    evaluate_offline.main()
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.setattr(benchmark, "load_dotenv", lambda: None)
+    monkeypatch.setattr(sys, "argv", ["benchmark", "--db", "lancedb_movies"])
+    benchmark.main()
+
+    app.run()
+
+    assert not app.exception
+    subheaders = [s.value for s in app.subheader]
+    assert any("Offline evaluation" in s for s in subheaders)
+    assert any("Popularity weight" in s for s in subheaders)
+    assert "Latency of a text query" in subheaders
+    assert not any("No evaluation reports yet" in info.value for info in app.info)
 
 
 def test_recommend_from_liked_movies_excludes_them(app):

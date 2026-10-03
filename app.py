@@ -1,3 +1,4 @@
+import json
 import os
 
 import numpy as np
@@ -13,6 +14,7 @@ st.set_page_config(page_title="Movie Recommender", page_icon="🎬", layout="wid
 
 CHART_COLOR = "#636EFA"
 TOP_K = 10
+REPORT_DIR = "reports"
 
 
 # ==========================================
@@ -179,7 +181,120 @@ def render_chat():
 # ==========================================
 
 
+def load_report(name):
+    """A file written by the scripts in scripts/, or None if it has not been generated."""
+    path = os.path.join(REPORT_DIR, name)
+    if not os.path.exists(path):
+        return None
+    if name.endswith(".csv"):
+        return pd.read_csv(path, encoding="utf-8")
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def with_interval(metric, fmt):
+    return f"{metric['value']:{fmt}} [{metric['ci95_low']:{fmt}}, {metric['ci95_high']:{fmt}}]"
+
+
+def render_offline_eval(report):
+    data, protocol, results = report["data"], report["protocol"], report["results"]
+    st.subheader("Offline evaluation: can it find the next movie a user liked?")
+    st.caption(
+        f"{data['evaluated_users']:,} MovieLens users with at least "
+        f"{protocol['min_liked_movies_per_user']} liked movies (rating ≥ "
+        f"{protocol['liked_means_rating_at_least']}). The last liked movie is hidden; the earlier "
+        f"ones are the input. Everything the user had already rated is excluded. "
+        f"Square brackets: 95% bootstrap interval over users."
+    )
+    labels = {
+        "popularity": "Popularity baseline (most rated movies)",
+        "content_default": f"Content-based + reranker ({results['content_default']['candidates']} candidates)",
+        "content_as_served": f"Content-based + reranker ({results['content_as_served']['candidates']} "
+                             "candidates, as served on the Recommend tab)",
+    }
+    st.dataframe(
+        pd.DataFrame([
+            {
+                "Recommender": labels[name],
+                "HitRate@10": with_interval(result["hit_rate_at_10"], ".2%"),
+                "NDCG@10": with_interval(result["ndcg_at_10"], ".4f"),
+                "Catalogue coverage": f"{result['catalog_coverage']['value']:.2%}",
+                "Long-tail share": with_interval(result["long_tail_share"], ".1%"),
+            }
+            for name, result in results.items()
+        ]),
+        hide_index=True, use_container_width=True,
+    )
+    diff = report["hit_rate_difference_default_minus_popularity"]
+    st.caption(
+        f"HitRate@10 difference, content-based minus popularity: {diff['value']:+.2%} "
+        f"[{diff['ci95_low']:+.2%}, {diff['ci95_high']:+.2%}]. Long-tail share is the share of "
+        f"recommendations outside the {report['head_movies']:,} most rated movies. Offline "
+        f"metrics on MovieLens ratings do not replace an A/B test."
+    )
+
+
+def render_tradeoff(tradeoff):
+    st.subheader("Popularity weight: accuracy against variety")
+    left, right = st.columns([3, 2])
+    with left:
+        points = tradeoff.assign(label="pop_weight " + tradeoff["pop_weight"].astype(str))
+        fig = px.line(points, x="long_tail_share", y="hit_rate_at_10", text="label", markers=True)
+        fig.update_traces(line_color=CHART_COLOR, textposition="top center")
+        fig.update_layout(xaxis_title="Long-tail share of recommendations", yaxis_title="HitRate@10",
+                          xaxis_tickformat=".0%", yaxis_tickformat=".1%")
+        st.plotly_chart(fig, use_container_width=True)
+    with right:
+        st.dataframe(
+            pd.DataFrame({
+                "pop_weight": tradeoff["pop_weight"],
+                "HitRate@10": tradeoff["hit_rate_at_10"].map("{:.2%}".format),
+                "NDCG@10": tradeoff["ndcg_at_10"].map("{:.4f}".format),
+                "Coverage": tradeoff["catalog_coverage"].map("{:.2%}".format),
+                "Long tail": tradeoff["long_tail_share"].map("{:.1%}".format),
+            }),
+            hide_index=True, use_container_width=True,
+        )
+        st.caption("Quality weight fixed at 0.1; similarity weight = 0.9 − pop_weight.")
+
+
+def render_latency(report):
+    st.subheader("Latency of a text query")
+    names = {"embedding": "Embed the query", "search": "LanceDB search", "rerank": "Rerank",
+             "validation": "Validate output", "total": "Total"}
+    st.dataframe(
+        pd.DataFrame([
+            {"Step": names.get(step, step), "p50 (ms)": f"{stats['p50_ms']:.1f}", "p95 (ms)": f"{stats['p95_ms']:.1f}"}
+            for step, stats in report["latency"].items()
+        ]),
+        hide_index=True, use_container_width=True,
+    )
+    machine, cold = report["machine"], report["cold_start"]
+    cold_parts = [f"{label} {cold[key]:.1f} s" for key, label in
+                  [("download_s", "download"), ("unpack_s", "unpack"), ("load_model_s", "load model"),
+                   ("load_table_s", "load table")] if cold.get(key) is not None]
+    st.caption(
+        f"{report['queries']} queries on {report['database']['movies']:,} movies, "
+        f"{machine['device'].upper()} only ({machine['processor'] or machine['platform']}, "
+        f"{machine['cpu_count']} logical cores). Cold start, measured once: {', '.join(cold_parts)}. "
+        f"The LLM call is not included."
+    )
+
+
 def render_evaluation():
+    offline_eval = load_report("offline_eval.json")
+    tradeoff = load_report("tradeoff.csv")
+    latency = load_report("latency.json")
+    if offline_eval is not None:
+        render_offline_eval(offline_eval)
+    if tradeoff is not None:
+        render_tradeoff(tradeoff)
+    if latency is not None:
+        render_latency(latency)
+    if offline_eval is None and tradeoff is None and latency is None:
+        st.info("No evaluation reports yet. Run `python -m scripts.evaluate_offline` and "
+                "`python -m scripts.benchmark` to generate them.")
+
     catalog = engine.catalog
     st.subheader("The catalogue")
     st.caption(f"{len(catalog):,} movies in the vector database.")

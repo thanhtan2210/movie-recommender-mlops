@@ -113,3 +113,15 @@ def mock_movie_candidates() -> List[Dict[str, Any]]:
             "similarity_score": 0.95
         }
     ]
+
+
+def write_synthetic_ratings(path) -> None:
+    """Six users who each liked six consecutive catalogue movies, in MovieLens ratings.csv layout."""
+    import pandas as pd
+
+    movie_ids = sorted(m[0] for m in MOVIES)
+    rows = []
+    for user in range(1, 7):
+        for step, movie_id in enumerate(movie_ids[user % 3:user % 3 + 6]):
+            rows.append((user, movie_id, 5.0 if step % 2 == 0 else 4.0, 1000 + step))
+    pd.DataFrame(rows, columns=["userId", "movieId", "rating", "timestamp"]).to_csv(path, index=False)
