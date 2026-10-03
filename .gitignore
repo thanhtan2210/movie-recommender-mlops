@@ -21,3 +21,6 @@ Thumbs.db
 
 # Trained models (rebuilt by src.train)
 artifacts/
+
+# Local MLflow store (used when DagsHub is not configured)
+mlflow.db
