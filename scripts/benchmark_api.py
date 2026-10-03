@@ -1,0 +1,136 @@
+"""Client-side latency of the running API (start the container first).
+
+  docker run -p 8000:8000 movie-rec
+  python -m scripts.benchmark_api
+
+Sends 200 GET /recommend/{user_id} for real user ids drawn at random (seed 42)
+and 50 POST /recommend with 5-20 random catalogue movies each, after 20
+warm-up requests that are not counted. Writes reports/api_latency.json.
+
+The default URL uses 127.0.0.1, not localhost: on Docker Desktop for Windows,
+a POST sent to `localhost` goes through the IPv6 loopback proxy and takes
+about 50 ms longer, which has nothing to do with the API. --compare-localhost
+measures the POST requests through `localhost` as well and stores both.
+"""
+import argparse
+import ctypes
+import json
+import os
+import platform
+import sys
+import time
+from typing import Any, Dict, List, Optional
+
+import httpx
+import numpy as np
+
+from src.export_champion import SERVING_DIR, state_path
+
+REPORT_PATH = os.path.join("reports", "api_latency.json")
+SEED = 42
+WARMUP_REQUESTS = 20
+GET_REQUESTS = 200
+POST_REQUESTS = 50
+TOP_N = 10
+
+
+def summarise(seconds: List[float]) -> Dict[str, float]:
+    ms = np.asarray(seconds) * 1000
+    return {"requests": int(len(ms)), "p50_ms": float(np.percentile(ms, 50)), "p95_ms": float(np.percentile(ms, 95)),
+            "p99_ms": float(np.percentile(ms, 99)), "mean_ms": float(ms.mean())}
+
+
+def timed(client: httpx.Client, method: str, url: str, **kwargs) -> float:
+    started = time.perf_counter()
+    response = client.request(method, url, **kwargs)
+    elapsed = time.perf_counter() - started
+    response.raise_for_status()
+    return elapsed
+
+
+def total_ram_gb() -> Optional[float]:
+    try:
+        if sys.platform == "win32":
+            class MemoryStatus(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            status = MemoryStatus()
+            status.dwLength = ctypes.sizeof(MemoryStatus)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
+            return round(status.ullTotalPhys / 1024 ** 3, 1)
+        return round(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1024 ** 3, 1)
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def machine_info() -> Dict[str, Any]:
+    return {"platform": platform.platform(), "processor": platform.processor(), "logical_cpus": os.cpu_count(),
+            "ram_gb": total_ram_gb(), "python": platform.python_version()}
+
+
+def run(url: str, model_dir: str, server: str, compare_localhost: bool = False) -> Dict[str, Any]:
+    with np.load(state_path(model_dir)) as state:
+        user_ids, movie_ids = state["user_ids"], state["item_ids"]
+    rng = np.random.default_rng(SEED)
+    users = rng.choice(user_ids, size=WARMUP_REQUESTS + GET_REQUESTS, replace=False).tolist()
+    bodies = [{"liked_movie_ids": rng.choice(movie_ids, size=int(rng.integers(5, 21)), replace=False).tolist(),
+               "n": TOP_N} for _ in range(POST_REQUESTS)]
+
+    with httpx.Client(base_url=url, timeout=30.0) as client:
+        health = client.get("/health").raise_for_status().json()
+        for user in users[:WARMUP_REQUESTS]:
+            timed(client, "GET", f"/recommend/{user}", params={"n": TOP_N})
+        get_seconds = [timed(client, "GET", f"/recommend/{user}", params={"n": TOP_N})
+                       for user in users[WARMUP_REQUESTS:]]
+        post_seconds = [timed(client, "POST", "/recommend", json=body) for body in bodies]
+
+    via_localhost = None
+    if compare_localhost:
+        with httpx.Client(base_url=url.replace("127.0.0.1", "localhost"), timeout=30.0) as client:
+            for body in bodies[:5]:
+                timed(client, "POST", "/recommend", json=body)
+            via_localhost = summarise([timed(client, "POST", "/recommend", json=body) for body in bodies])
+
+    return {
+        "url": url,
+        "server": server,
+        "model": {"version": health["model_version"], "cutoff": health["cutoff"],
+                  "users": int(len(user_ids)), "movies": int(len(movie_ids))},
+        "protocol": {"seed": SEED, "warmup_requests_not_counted": WARMUP_REQUESTS, "n": TOP_N,
+                     "sequential": True, "measured": "client side, one keep-alive connection"},
+        "get_recommend_user": summarise(get_seconds),
+        "post_recommend": summarise(post_seconds),
+        "post_recommend_via_localhost": via_localhost,
+        "machine": machine_info(),
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Measure the API's latency from the client side.")
+    parser.add_argument("--url", default="http://127.0.0.1:8000")
+    parser.add_argument("--model-dir", default=SERVING_DIR, help="where the served model's user and movie ids are read from")
+    parser.add_argument("--server", default="Docker container on the same machine",
+                        help="a short description of where the API runs, stored in the report")
+    parser.add_argument("--compare-localhost", action="store_true",
+                        help="also measure POST through the host name 'localhost' (see the module docstring)")
+    args = parser.parse_args()
+
+    report = run(args.url, args.model_dir, args.server, args.compare_localhost)
+    for name in ("get_recommend_user", "post_recommend", "post_recommend_via_localhost"):
+        s = report[name]
+        if s is None:
+            continue
+        print(f"  {name:<30} n={s['requests']:>3}  p50 {s['p50_ms']:7.2f} ms | p95 {s['p95_ms']:7.2f} ms | "
+              f"p99 {s['p99_ms']:7.2f} ms")
+    os.makedirs(os.path.dirname(REPORT_PATH), exist_ok=True)
+    with open(REPORT_PATH, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+        f.write("\n")
+    print(f"Saved {REPORT_PATH}")
+
+
+if __name__ == "__main__":
+    main()
