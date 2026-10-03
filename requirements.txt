@@ -1,5 +1,6 @@
-pandas==2.2.0
-numpy==1.26.4
+# Python 3.13
+pandas==3.0.6
+numpy==2.5.3
 pyarrow==25.0.1
 scipy==1.17.1
 scikit-learn==1.9.1

@@ -14,6 +14,7 @@ import argparse
 import datetime
 import json
 import os
+import platform
 import subprocess
 import time
 from dataclasses import asdict, dataclass
@@ -244,19 +245,30 @@ def in_catalog_lookup(movie_ids: np.ndarray, in_catalog: np.ndarray) -> np.ndarr
 def write_parquet(frame: pd.DataFrame, path: str) -> None:
     # No index and no pandas metadata: the file content depends on the data only.
     table = pa.Table.from_pandas(frame, preserve_index=False).replace_schema_metadata(None)
-    pq.write_table(table, path, compression="zstd")
+    # Text columns are always stored as Arrow `string`: pandas versions differ in the
+    # Arrow type they produce (string or large_string), which would change the file's hash.
+    text = pa.schema([pa.field(f.name, pa.string()) if pa.types.is_large_string(f.type) else f for f in table.schema])
+    pq.write_table(table.cast(text), path, compression="zstd")
+
+
+def environment() -> Dict[str, str]:
+    """Versions that affect the numbers: floating-point results can differ slightly between them."""
+    return {"python": platform.python_version(), "numpy": np.__version__, "pandas": pd.__version__,
+            "pyarrow": pa.__version__}
 
 
 def git_state() -> Dict[str, Any]:
+    """The commit the code ran at, whether tracked files had changes, and the environment."""
+    state = {"environment": environment()}
     try:
         commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
         # Tracked files only, and not the generated reports: the flag is about the code that ran.
         dirty = bool(subprocess.run(
             ["git", "status", "--porcelain", "--untracked-files=no", "--", ".", ":(exclude)reports"],
             capture_output=True, text=True, check=True).stdout.strip())
-        return {"git_commit": commit, "git_uncommitted_changes": dirty}
+        return {"git_commit": commit, "git_uncommitted_changes": dirty, **state}
     except (OSError, subprocess.CalledProcessError):
-        return {"git_commit": None, "git_uncommitted_changes": None}
+        return {"git_commit": None, "git_uncommitted_changes": None, **state}
 
 
 def write_outputs(prepared: Prepared, config: DataConfig, out_dir: str, source: str, started: float) -> Dict[str, Any]:
