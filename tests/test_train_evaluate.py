@@ -49,7 +49,8 @@ def workspace(tmp_path, monkeypatch):
     raw = tmp_path / "raw"
     raw.mkdir()
     synthetic_ratings().to_csv(raw / "ratings.csv", index=False)
-    pd.DataFrame({"movieId": range(1, 41), "title": [f"Movie {i}" for i in range(1, 41)],
+    titles = [f"Movie {i} ({1999 if i <= 20 else 2018})" for i in range(1, 41)]
+    pd.DataFrame({"movieId": range(1, 41), "title": titles,
                   "genres": ["A"] * 20 + ["B"] * 20}).to_csv(raw / "movies.csv", index=False)
     prep.run(DATA_CONFIG, source=f"local:{raw}")
     (tmp_path / "train.yaml").write_text("k_values: [2, 4]\nvalidation_days: 31\nrandom_state: 42\n", encoding="utf-8")

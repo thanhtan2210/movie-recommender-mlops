@@ -10,13 +10,14 @@ import argparse
 import json
 import math
 import os
+from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 
 from src import baseline, metrics
-from src.config import load_data_config
+from src.config import DataConfig, load_data_config
 from src.data import Interactions, build_interactions, data_config_of, ensure_processed, load_stats, read_parquet
 from src.model import NO_RECOMMENDATION, PureSVD, artifact_dir, load_meta
 from src.prepare import git_state, iso
@@ -53,6 +54,51 @@ def head_mask(interactions: Interactions) -> np.ndarray:
     return head
 
 
+@dataclass
+class TestSet:
+    """Everything needed to score recommenders on the test window of one cutoff."""
+    config: DataConfig
+    stats: Dict[str, Any]
+    train: pd.DataFrame
+    test: pd.DataFrame
+    movies: pd.DataFrame
+    interactions: Interactions
+    users: np.ndarray  # evaluated user ids
+    targets: np.ndarray  # (n_users, n_items) bool: liked in the test window
+    liked_rows: Any  # the users' liked movies in train (model input)
+    seen_rows: Any  # every movie the users rated in train (never recommended)
+    head: np.ndarray  # bool per movie: among the most rated in train
+
+    def popularity_recommendations(self) -> np.ndarray:
+        ranking = baseline.popularity_ranking(self.train, self.interactions.item_ids,
+                                              self.config.cutoff_timestamp, self.config.positive_threshold)
+        return baseline.recommend(ranking, self.seen_rows, TOP_N)
+
+
+def load_test_set(cutoff: str) -> TestSet:
+    directory = ensure_processed(cutoff)
+    stats = load_stats(directory)
+    config = data_config_of(stats)
+    train = read_parquet(directory, "train.parquet")
+    test = read_parquet(directory, "test.parquet")
+    interactions = build_interactions(train, config.positive_threshold)
+    users, rows, targets = build_targets(interactions, test)
+    return TestSet(config=config, stats=stats, train=train, test=test,
+                   movies=read_parquet(directory, "movies.parquet"), interactions=interactions,
+                   users=users, targets=targets, liked_rows=interactions.liked[rows],
+                   seen_rows=interactions.seen[rows], head=head_mask(interactions))
+
+
+def load_trained_model(cutoff: str, test_set: TestSet) -> Tuple[PureSVD, Dict[str, Any]]:
+    """The model saved by src.train, checked against the data it is about to be scored on."""
+    model, meta = PureSVD.load(artifact_dir(cutoff)), load_meta(artifact_dir(cutoff))
+    if meta["train_sha256"] != test_set.stats["sha256"]["train.parquet"]:
+        raise SystemExit("The model was trained on a different train.parquet. Run src.train again.")
+    if not np.array_equal(test_set.interactions.item_ids, model.item_ids):
+        raise SystemExit("The model's movie index does not match the training set.")
+    return model, meta
+
+
 def titles(columns, interactions: Interactions, title_of: Dict[int, str]) -> List[str]:
     return [title_of.get(int(interactions.item_ids[c]), "?") for c in columns if c != NO_RECOMMENDATION]
 
@@ -86,30 +132,15 @@ def main():
     args = parser.parse_args()
     cutoff = args.cutoff or load_data_config().cutoff
 
-    directory = ensure_processed(cutoff)
-    stats = load_stats(directory)
-    config = data_config_of(stats)
-    model, meta = PureSVD.load(artifact_dir(cutoff)), load_meta(artifact_dir(cutoff))
-    if meta["train_sha256"] != stats["sha256"]["train.parquet"]:
-        raise SystemExit("The model was trained on a different train.parquet. Run src.train again.")
-
-    train = read_parquet(directory, "train.parquet")
-    test = read_parquet(directory, "test.parquet")
-    movies = read_parquet(directory, "movies.parquet")
-    interactions = build_interactions(train, config.positive_threshold)
-    if not np.array_equal(interactions.item_ids, model.item_ids):
-        raise SystemExit("The model's movie index does not match the training set.")
-
-    users, rows, targets = build_targets(interactions, test)
-    liked_rows, seen_rows = interactions.liked[rows], interactions.seen[rows]
+    data = load_test_set(cutoff)
+    model, meta = load_trained_model(cutoff, data)
+    config, train, test, movies, interactions = data.config, data.train, data.test, data.movies, data.interactions
+    users, targets, seen_rows, head = data.users, data.targets, data.seen_rows, data.head
     recommendations = {
-        "pure_svd": model.recommend(liked_rows, seen_rows, TOP_N),
-        "popularity": baseline.recommend(
-            baseline.popularity_ranking(train, interactions.item_ids, config.cutoff_timestamp,
-                                        config.positive_threshold), seen_rows, TOP_N),
+        "pure_svd": model.recommend(data.liked_rows, seen_rows, TOP_N),
+        "popularity": data.popularity_recommendations(),
     }
 
-    head = head_mask(interactions)
     indices = metrics.bootstrap_indices(len(users))
     results = {name: metrics.evaluate(recs, targets, head, indices) for name, recs in recommendations.items()}
     difference = metrics.paired_difference(recommendations["pure_svd"], recommendations["popularity"],
