@@ -15,17 +15,23 @@ def window_start(cutoff_timestamp: int) -> int:
     return cutoff_timestamp - WINDOW_DAYS * 86400
 
 
+def liked_counts(train: pd.DataFrame, item_ids: np.ndarray, cutoff_timestamp: int,
+                 positive_threshold: float) -> np.ndarray:
+    """Per movie column: the number of liked ratings in [cutoff - 90 days, cutoff)."""
+    timestamps = train["timestamp"].to_numpy()
+    recent = (timestamps >= window_start(cutoff_timestamp)) & (timestamps < cutoff_timestamp)
+    liked = train["rating"].to_numpy() >= positive_threshold
+    columns = np.searchsorted(item_ids, train["movieId"].to_numpy()[recent & liked])
+    return np.bincount(columns, minlength=len(item_ids))
+
+
 def popularity_ranking(train: pd.DataFrame, item_ids: np.ndarray, cutoff_timestamp: int,
                        positive_threshold: float) -> np.ndarray:
     """Movie columns ordered by the number of liked ratings in [cutoff - 90 days, cutoff).
 
     Ties, including the movies with no liked rating in the window, go to the lower column.
     """
-    timestamps = train["timestamp"].to_numpy()
-    recent = (timestamps >= window_start(cutoff_timestamp)) & (timestamps < cutoff_timestamp)
-    liked = train["rating"].to_numpy() >= positive_threshold
-    columns = np.searchsorted(item_ids, train["movieId"].to_numpy()[recent & liked])
-    counts = np.bincount(columns, minlength=len(item_ids))
+    counts = liked_counts(train, item_ids, cutoff_timestamp, positive_threshold)
     return np.argsort(-counts, kind="stable")
 
 

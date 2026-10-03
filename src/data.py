@@ -2,7 +2,7 @@
 import json
 import os
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -73,8 +73,14 @@ def _positions(index: np.ndarray, ids: np.ndarray, what: str) -> np.ndarray:
     return positions
 
 
-def build_interactions(train: pd.DataFrame, positive_threshold: float) -> Interactions:
-    """Binary user x movie matrices; the user and movie index come from the training set only."""
+def build_interactions(train: pd.DataFrame, positive_threshold: float,
+                       liked_since: Optional[int] = None) -> Interactions:
+    """Binary user x movie matrices; the user and movie index come from the training set only.
+
+    `liked_since` (Unix seconds) restricts the liked matrix to recent ratings.
+    The index and the `seen` matrix always use every training rating, so a
+    movie rated long ago is still never recommended again.
+    """
     user_ids = np.unique(train["userId"].to_numpy())
     item_ids = np.unique(train["movieId"].to_numpy())
     rows = np.searchsorted(user_ids, train["userId"].to_numpy()).astype(np.int32)
@@ -83,6 +89,8 @@ def build_interactions(train: pd.DataFrame, positive_threshold: float) -> Intera
 
     seen = sparse.csr_matrix((np.ones(len(rows), dtype=np.int8), (rows, cols)), shape=shape)
     positive = train["rating"].to_numpy() >= positive_threshold
+    if liked_since is not None:
+        positive &= train["timestamp"].to_numpy() >= liked_since
     liked = sparse.csr_matrix(
         (np.ones(int(positive.sum()), dtype=np.float32), (rows[positive], cols[positive])), shape=shape)
     # A (user, movie) pair rated twice would otherwise be summed to 2.

@@ -5,7 +5,8 @@ import numpy as np
 import pytest
 from scipy import sparse
 
-from src.model import META_FILE, NO_RECOMMENDATION, PureSVD, load_meta, top_n
+from src.model import (META_FILE, NO_RECOMMENDATION, PureSVD, load_meta, popularity_boost,
+                       standardise_rows, top_n)
 
 # Two groups of users with disjoint tastes: users 0-2 like movies 0 and 1,
 # users 3-5 like movies 2 and 3. With k = 2 the factors span the two blocks,
@@ -94,3 +95,69 @@ def test_save_and_load_give_the_same_scores(model, tmp_path):
     assert meta["item_factors_sha256"] == model.factors_sha256()
     with open(os.path.join(directory, META_FILE), encoding="utf-8") as f:
         assert json.load(f) == meta
+
+
+# ---------------------------------------------------------------- blend with recent popularity
+
+
+def test_standardise_rows():
+    scores = np.array([[1.0, 2.0, 3.0, 4.0], [5.0, 5.0, 5.0, 5.0]], dtype=np.float32)
+
+    z = standardise_rows(scores)
+
+    assert np.allclose(z[0].mean(), 0.0, atol=1e-6) and np.allclose(z[0].std(), 1.0, atol=1e-6)
+    assert z[0].tolist() == sorted(z[0].tolist())      # order is preserved
+    assert z[1].tolist() == [0.0, 0.0, 0.0, 0.0]       # a user with no liked movie: constant scores
+
+
+def test_popularity_boost_is_the_z_score_of_log_counts():
+    counts = np.array([0, 9, 99, 999])
+
+    boost = popularity_boost(counts)
+
+    logged = np.log1p(counts)
+    assert np.allclose(boost, (logged - logged.mean()) / logged.std(), atol=1e-6)
+    assert popularity_boost(np.zeros(3)).tolist() == [0.0, 0.0, 0.0]
+
+
+def test_weight_zero_is_plain_pure_svd(model):
+    liked = rows([1, 0, 0, 0], [0, 0, 1, 0])
+    boost = popularity_boost(np.array([5, 1, 50, 0]))
+
+    assert np.array_equal(model.with_blend(boost, 0.0).score(liked), model.score(liked))
+
+
+def test_blended_score_matches_the_formula(model):
+    liked = rows([1, 0, 0, 0])
+    boost = popularity_boost(np.array([5, 1, 50, 0]))
+
+    blended = model.with_blend(boost, 0.5).score(liked)
+
+    assert np.allclose(blended, standardise_rows(model.score(liked)) + 0.5 * boost, atol=1e-6)
+
+
+def test_a_large_weight_approaches_the_popularity_order(model):
+    liked, seen = rows([1, 0, 0, 0]), rows([1, 0, 0, 0])
+    boost = popularity_boost(np.array([5, 1, 50, 10]))  # popularity order of the unseen movies: 2, 3, 1
+
+    assert model.recommend(liked, seen, n=3).tolist()[0][0] == 1           # plain: the same-taste movie first
+    assert model.with_blend(boost, 100.0).recommend(liked, seen, n=3).tolist() == [[2, 3, 1]]
+
+
+def test_blend_weight_needs_a_boost(model):
+    with pytest.raises(ValueError):
+        PureSVD(model.item_factors, model.item_ids, blend_weight=1.0)
+
+
+def test_blended_model_survives_save_and_load(model, tmp_path):
+    boost = popularity_boost(np.array([5, 1, 50, 10]))
+    blended = model.with_blend(boost, 0.5)
+    directory = str(tmp_path / "blend")
+
+    blended.save(directory, {"train_window": "1y"})
+    loaded = PureSVD.load(directory)
+
+    liked = rows([1, 0, 0, 0], [0, 0, 1, 1])
+    assert loaded.blend_weight == 0.5
+    assert np.array_equal(loaded.score(liked), blended.score(liked))
+    assert load_meta(directory)["blend_weight"] == 0.5 and load_meta(directory)["train_window"] == "1y"

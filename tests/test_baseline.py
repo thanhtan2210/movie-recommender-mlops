@@ -44,3 +44,11 @@ def test_recommend_takes_the_most_popular_unrated_movies():
     recs = baseline.recommend(ranking, seen, n=2)
 
     assert recs.tolist() == [[1, 2], [2, 0], [3, NO_RECOMMENDATION]]
+
+
+def test_liked_counts_are_what_the_ranking_sorts():
+    inside = CUTOFF - 10 * DAY
+    train = ratings_frame(rows=[(1, 20, 4.0, inside), (2, 20, 5.0, inside), (3, 30, 4.5, inside),
+                                (4, 10, 5.0, CUTOFF - 200 * DAY), (5, 40, 1.0, inside)])
+
+    assert baseline.liked_counts(train, ITEM_IDS, CUTOFF, positive_threshold=4.0).tolist() == [0, 2, 1, 0]
