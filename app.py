@@ -7,7 +7,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from src.serving.chatbot import MovieChatbot
+from src.serving.chatbot import MovieChatbot, set_search_engine
 from src.serving.semantic_search import SemanticSearchEngine
 
 st.set_page_config(page_title="Movie Recommender", page_icon="🎬", layout="wide")
@@ -52,6 +52,7 @@ def init_lancedb():
 
     engine = SemanticSearchEngine(lancedb_uri=DB_PATH)
     engine.load_table()
+    engine.load_model()
     return engine
 
 
@@ -65,14 +66,10 @@ def init_chatbot():
 
 
 engine = init_lancedb()
+if engine is not None:
+    # The chatbot tools use the same engine, so the table and the model are loaded once.
+    set_search_engine(engine)
 chatbot = init_chatbot()
-
-
-@st.cache_data(ttl=3600)
-def get_catalog():
-    """Movie metadata from LanceDB (no vectors)."""
-    df = engine.table.to_pandas()
-    return df.drop(columns=["vector"])
 
 
 # ==========================================
@@ -98,7 +95,7 @@ def render_recommend():
         st.session_state.recommendations = []
         st.session_state.recommendation_source = ""
 
-    catalog = get_catalog()
+    catalog = engine.catalog
     title_to_id = dict(zip(catalog['title'], catalog['movieId']))
 
     left, right = st.columns(2)
@@ -112,7 +109,7 @@ def render_recommend():
                 try:
                     user_vec = engine.get_user_vector(ratings)
                     st.session_state.recommendations = engine.personalized_recommend(
-                        user_vec, top_k=TOP_K)
+                        user_vec, top_k=TOP_K, exclude_ids=list(ratings))
                     st.session_state.recommendation_source = "Because you liked: " + \
                         ", ".join(selected_titles)
                 except Exception as e:
@@ -199,7 +196,7 @@ def render_chat():
 
 
 def render_evaluation():
-    catalog = get_catalog()
+    catalog = engine.catalog
     st.subheader("The catalogue")
     st.caption(f"{len(catalog):,} movies in the vector database.")
 

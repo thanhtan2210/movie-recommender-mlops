@@ -19,6 +19,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+MODEL_NAME = "llama-3.3-70b-versatile"
+
 API_KEYS = [os.getenv(f"GROQ_API_KEY_{i}") for i in range(1, 6) if os.getenv(f"GROQ_API_KEY_{i}")]
 if not API_KEYS and os.getenv("GROQ_API_KEY"):
     API_KEYS = [os.getenv("GROQ_API_KEY")]
@@ -35,7 +37,28 @@ def rotate_key():
         return True
     return False
 
+def create_completion(**kwargs):
+    """Call Groq; on a rate limit, switch to the next API key and retry.
+
+    Each key is tried at most once. When every key is rate-limited (or there
+    is only one key), the RateLimitError is raised so the caller can fall back.
+    """
+    for _ in range(max(len(API_KEYS), 1)):
+        try:
+            return client.chat.completions.create(**kwargs)
+        except RateLimitError as error:
+            last_error = error
+            if not rotate_key():
+                break
+    raise last_error
+
 _SEARCH_ENGINE = None
+
+def set_search_engine(engine):
+    """Share the app's engine so the table and the model are loaded only once."""
+    global _SEARCH_ENGINE
+    _SEARCH_ENGINE = engine
+
 def get_search_engine():
     global _SEARCH_ENGINE
     if _SEARCH_ENGINE is None:
@@ -83,6 +106,26 @@ tools = [
     {"type": "function", "function": {"name": "get_trending_by_rating", "description": "Lấy phim hay nhất theo rating tối thiểu và số vote.", "parameters": {"type": "object", "properties": {"min_rating": {"type": "number"}, "min_votes": {"type": "integer"}}, "required": ["min_rating", "min_votes"]}}}
 ]
 
+# The only functions the model may call. A tool name that is not a key here
+# is never executed.
+TOOL_REGISTRY = {
+    "search_movies_by_description": search_movies_by_description,
+    "get_recommendations": get_recommendations,
+    "get_trending_by_rating": get_trending_by_rating,
+}
+
+def run_tool(name: str, arguments: str) -> str:
+    """Run one tool call requested by the model and return its JSON result."""
+    func = TOOL_REGISTRY.get(name)
+    if func is None:
+        logger.warning(f"Model requested an unknown tool: {name}")
+        return json.dumps({"error": f"Unknown tool: {name}"})
+    try:
+        return func(**json.loads(arguments or "{}"))
+    except (ValueError, TypeError) as e:
+        logger.error(f"Bad arguments for tool {name}: {e}")
+        return json.dumps({"error": f"Invalid arguments for {name}"})
+
 # LEVEL 3: RAG Chatbot with Entity Memory
 class MovieChatbot:
     def __init__(self):
@@ -93,7 +136,7 @@ class MovieChatbot:
     def chat(self, user_message: str, history: Optional[List[Dict[str, Any]]] = None, entity_memory: Optional[Dict[str, Any]] = None) -> str:
         engine = get_search_engine()
         context_str = ""
-        
+
         # 1. RAG Retrieval Step
         if engine and engine != "MOCK":
             context_movies = engine.search_by_description(user_message, top_k=3)
@@ -109,7 +152,7 @@ class MovieChatbot:
                 memory_str = f"Sở thích của người dùng: {', '.join(liked)}\n"
 
         # 3. System Prompt Augmentation
-        system_prompt = f"""Bạn là chuyên gia tư vấn phim AI. 
+        system_prompt = f"""Bạn là chuyên gia tư vấn phim AI.
         TUYỆT ĐỐI KHÔNG tự bịa đặt thông tin. Chỉ sử dụng thông tin từ THÔNG TIN DATABASE cung cấp bên dưới. Nếu không có thông tin, hãy lịch sự trả lời: 'Tôi không có đủ dữ liệu về bộ phim này'. Trả lời ngắn gọn, thân thiện bằng tiếng Việt.
         {memory_str}
         {context_str}
@@ -123,8 +166,8 @@ class MovieChatbot:
         messages.append({"role": "user", "content": user_message})
 
         try:
-            response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+            response = create_completion(
+                model=MODEL_NAME,
                 messages=messages,
                 tools=tools,
                 tool_choice="auto",
@@ -132,16 +175,15 @@ class MovieChatbot:
             )
             msg = response.choices[0].message
             if msg.tool_calls:
+                # The assistant message goes in once, followed by one result per tool call.
+                messages.append(msg)
                 for tool_call in msg.tool_calls:
-                    func_name = tool_call.function.name
-                    args = json.loads(tool_call.function.arguments)
-                    result = globals()[func_name](**args)
-                    messages.append(msg)
+                    result = run_tool(tool_call.function.name, tool_call.function.arguments)
                     messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
-                final_res = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=messages)
+                final_res = create_completion(model=MODEL_NAME, messages=messages)
                 return final_res.choices[0].message.content
             return msg.content
-            
+
         except RateLimitError:
             logger.warning("Quota exhausted, Rule-based Fallback Active...")
             if engine != "MOCK":
