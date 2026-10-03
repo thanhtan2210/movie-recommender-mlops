@@ -6,15 +6,15 @@ Experiment and model registry: [MLflow on DagsHub](https://dagshub.com/thanhtan2
 
 ![Model registry: version 2 (blend) is the champion](docs/images/mlflow_registry.png)
 
-> The serving API is not built yet. The previous RAG version of this repo lives on branch `archive/before-cleanup`.
+> The previous RAG version of this repo lives on branch `archive/before-cleanup`.
 
 ## Problem → Approach → Results
 
 **Problem.** A streaming-style catalogue needs a "what to watch next" list per user, and the model behind it has to be refreshed as new ratings arrive without silently getting worse.
 
-**Approach.** MovieLens 25M, split by time. The model is a truncated SVD of the user × movie "liked" matrix blended with recent popularity; the baseline is recent popularity alone. One command runs a monthly cycle: prepare the data, compare challenger and champion on the last 30 days of training data (the gate), promote only if the challenger is better with 95% confidence, refit the winner, register it in MLflow, and score it on the following 30 days.
+**Approach.** MovieLens 25M, split by time. The model is a truncated SVD of the user × movie "liked" matrix blended with recent popularity; the baseline is recent popularity alone. One command runs a monthly cycle: prepare the data, compare challenger and champion on the last 30 days of training data (the gate), promote only if the challenger is better with 95% confidence, refit the winner, register it in MLflow, and score it on the following 30 days. The champion is served by a small API in a Docker image.
 
-**Results.** On July 2019, a month no modelling decision had looked at, the model reaches HitRate@10 27.7% against 22.4% for popularity and NDCG@10 0.0831 against 0.0711 (paired difference +0.0121, 95% interval [+0.0044, +0.0193], 1,475 users).
+**Results.** On July 2019, a month no modelling decision had looked at, the model reaches HitRate@10 27.7% against 22.4% for popularity and NDCG@10 0.0831 against 0.0711 (paired difference +0.0121, 95% interval [+0.0044, +0.0193], 1,475 users). The API answers a recommendation request in about 5 ms (median, measured from the client).
 
 ## Results
 
@@ -50,10 +50,25 @@ This gate is not independent evidence: its window, June 2019, is the month that 
 
 ![Runs of the pipeline in MLflow](docs/images/mlflow_experiment.png)
 
+### API latency
+
+The champion (version 2: 160,199 users, 12,930 movies) served from the Docker image on the same machine, sequential requests over one connection, measured from the client after 20 warm-up requests - `python -m scripts.benchmark_api`, [api_latency.json](reports/api_latency.json):
+
+| Request | Requests | p50 | p95 | p99 |
+| --- | --- | --- | --- | --- |
+| `GET /recommend/{user_id}` (random real users, seed 42) | 200 | 5.2 ms | 6.4 ms | 7.7 ms |
+| `POST /recommend` (5-20 random liked movies) | 50 | 5.1 ms | 6.2 ms | 6.9 ms |
+
+Machine: Windows 11, Intel x86-64 with 8 logical CPUs, 15.9 GB RAM, Docker Desktop. No concurrent load was applied. Two things changed the numbers during measurement and are fixed or recorded: the container is pinned to one linear-algebra thread (with one thread per core the same requests were several times slower), and requests go to `127.0.0.1` (through the host name `localhost`, Docker Desktop's loopback proxy adds about 43 ms to each POST: median 48.0 ms).
+
+The image is 1.41 GB, most of it the Python packages; the model state is 40 MB.
+
 ## How it works
 
 ```text
 MovieLens (R2: raw/) → prepare → R2: processed/<cutoff>/ → gate: challenger vs champion → refit winner → MLflow registry (alias champion) → score on the next 30 days
+                                                                                                        ↓
+                                                                    export champion → Docker image → API: /recommend
 ```
 
 | Component | Role |
@@ -62,9 +77,18 @@ MovieLens (R2: raw/) → prepare → R2: processed/<cutoff>/ → gate: challenge
 | scikit-learn + SciPy | Truncated SVD on a sparse user × movie matrix |
 | MLflow on DagsHub | Runs (parameters, metrics with interval bounds, pyfunc model), model registry, `champion` alias |
 | Cloudflare R2 | Raw data and prepared data per cutoff |
-| pytest + GitHub Actions | Unit and end-to-end tests on synthetic data, run without network or credentials |
+| FastAPI + Docker | Three endpoints serving the champion; the model is copied into the image, so the container holds no credentials |
+| pytest + GitHub Actions | Unit and end-to-end tests on synthetic data, and a Docker build with a smoke test, all without network access or credentials |
 
-Not built yet: the FastAPI + Docker serving layer, and a loop over several months.
+Not built yet: a loop over several months.
+
+**Retraining and the promotion gate are two different things:**
+
+| | What it does | Status |
+| --- | --- | --- |
+| Scheduled retraining | Each cutoff, the champion's model type is refitted on all ratings before the cutoff and registered as a new version | Built (step 4 of the pipeline) |
+| Gate for a new configuration | A challenger with a different model or configuration must beat the champion on the last 30 days, with the lower bound of the 95% interval above 0, before it replaces it | Built (steps 2-3); so far only used for blend against popularity |
+| Look-back evaluation | Each month's champion scored on the following month, over several months, to see whether retraining keeps the model ahead of popularity | Planned (stage 6) |
 
 **Data** (`src/prepare.py`). For a cutoff date (midnight UTC): train = every rating before the cutoff, for movies with at least 50 ratings in train; evaluation window = liked ratings (rating ≥ 4.0) in the 30 days after the cutoff, for users with at least 5 liked movies in train and movies in the training catalogue. Every filter is computed on the training set only. Parameters: [configs/data.yaml](configs/data.yaml). Running the same cutoff again gives byte-identical parquet files; an upload to R2 never overwrites different content.
 
@@ -72,17 +96,34 @@ Not built yet: the FastAPI + Docker serving layer, and a loop over several month
 
 **Baseline** (`src/baseline.py`). The movies with the most liked ratings in the last 90 days of training. Nothing to tune.
 
-**Tracking** (`src/tracking.py`). With `MLFLOW_TRACKING_URI` unset, runs go to a local `mlflow.db` instead of DagsHub.
+**Tracking** (`src/tracking.py`). By default every script writes only to the machine it runs on: MLflow runs go to a local `mlflow.db` and nothing is uploaded to R2. `--remote` is required to log to DagsHub and to upload to R2, and each script prints where it will write before it starts. Only registered runs upload the model; evaluation-only runs log parameters and metrics.
+
+**API** (`src/api.py`). `GET /health`; `GET /recommend/{user_id}?n=10`; `POST /recommend` with the movies an anonymous user liked, who is folded into the model with the same scoring. Requests are validated (1 ≤ n ≤ 50, at most 100 liked ids), and each one writes a JSON log line (time, endpoint, strategy, n, latency) to stdout.
 
 ## How to run
+
+Python 3.13.
 
 ```bash
 pip install -r requirements.txt
 python -m pytest -q
-python -m src.pipeline --cutoff 2019-07-01    # prepare, gate, refit, register, score the next 30 days
+python -m src.pipeline --cutoff 2019-07-01    # prepare, gate, refit, register, score the next 30 days (local MLflow)
+
+python -m src.export_champion --remote        # download the champion from DagsHub into serving_model/
+docker build -t movie-rec .
+docker run -p 8000:8000 movie-rec
 ```
 
-Credentials for R2 and DagsHub go in a `.env` file ([.env.example](.env.example)). Without R2, add `--source local:<directory with ratings.csv and movies.csv>`. The steps can also be run one at a time: `python -m src.prepare --cutoff <date> [--upload]`, `python -m src.train --cutoff <date>`, `python -m src.evaluate --cutoff <date>`.
+```bash
+# a user from the training data (an unknown id gets the popularity list)
+curl "http://127.0.0.1:8000/recommend/14722?n=10"
+
+# an anonymous user who liked The Godfather, Pulp Fiction, The Shawshank Redemption, Casablanca and 2001
+curl -X POST "http://127.0.0.1:8000/recommend" -H "Content-Type: application/json" \
+     -d '{"liked_movie_ids": [858, 296, 318, 912, 924], "n": 10}'
+```
+
+Credentials for R2 and DagsHub go in a `.env` file ([.env.example](.env.example)); they are only used with `--remote` (or to read the raw data from R2). Without R2, add `--source local:<directory with ratings.csv and movies.csv>` to the pipeline. `python -m src.export_champion` without `--remote` exports the champion of the local MLflow store. The steps can also be run one at a time: `python -m src.prepare --cutoff <date> [--remote]`, `python -m src.train --cutoff <date>`, `python -m src.evaluate --cutoff <date>`.
 
 ## Limitations
 
@@ -92,6 +133,9 @@ Credentials for R2 and DagsHub go in a `.env` file ([.env.example](.env.example)
 - **Accuracy costs variety.** The champion recommends 439 distinct movies across 1,475 users; plain SVD covered about twice as many in the June test.
 - **Offline metrics on ratings**, which are not viewing behaviour and do not replace an online test.
 - **A gate between identical models is a no-op.** Once the champion is the blend, the challenger has the same type and frozen parameters, so later gates only confirm and refit it until a different challenger exists.
+- **"personalized" is a weak label for most users.** The API reports `personalized` for every user in the training data, but the model only uses liked ratings of the last year: 11,567 of the 160,199 known users (7.2%) have one. The others receive the recent-popularity list minus the movies they already rated.
+- **Latency was measured without concurrent load**, on one laptop, with client and container on the same machine.
+- **Results depend slightly on the environment.** The reports in `reports/2019-06-01/` and `reports/2019-07-01/` were produced on Python 3.11 with NumPy 1.26. On the current pins (Python 3.13, NumPy 2.5) the prepared data is byte-identical, but retraining at cutoff 2019-06-01 gives NDCG@10 0.08467 instead of 0.08463: a different linear-algebra library changes a few near-ties.
 
 ## Appendix: how the model was chosen (cutoff 2019-06-01)
 
