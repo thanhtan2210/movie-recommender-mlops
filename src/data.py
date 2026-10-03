@@ -1,4 +1,5 @@
 """Load a prepared cutoff and turn its ratings into sparse user x movie matrices."""
+import datetime
 import json
 import os
 from dataclasses import dataclass
@@ -48,6 +49,20 @@ def data_config_of(stats: Dict[str, Any]) -> DataConfig:
 
 def read_parquet(directory: str, name: str) -> pd.DataFrame:
     return pq.read_table(os.path.join(directory, name)).to_pandas(split_blocks=True, self_destruct=True)
+
+
+def train_window_start(cutoff: str, window: str) -> Optional[int]:
+    """Start (Unix seconds, UTC) of a training window ending at `cutoff`: 'all', or '<n>y' for n years."""
+    if window == "all":
+        return None
+    if not window.endswith("y") or not window[:-1].isdigit():
+        raise ValueError(f"Unknown train_window {window!r}: use 'all' or '<n>y'")
+    day = datetime.date.fromisoformat(cutoff)
+    try:
+        start = day.replace(year=day.year - int(window[:-1]))
+    except ValueError:  # 29 February
+        start = day.replace(year=day.year - int(window[:-1]), day=28)
+    return int(datetime.datetime(start.year, start.month, start.day, tzinfo=datetime.timezone.utc).timestamp())
 
 
 @dataclass

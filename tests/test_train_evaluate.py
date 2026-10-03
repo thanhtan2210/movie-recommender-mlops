@@ -1,4 +1,4 @@
-"""train.py and evaluate.py end to end on a small synthetic dataset (no network)."""
+"""train.py and evaluate.py on a small synthetic dataset (no network)."""
 import json
 import os
 import sys
@@ -8,52 +8,59 @@ import pandas as pd
 import pytest
 
 from src import evaluate, prepare as prep, train
+from src.baseline import PopularityRecommender
 from src.config import DataConfig
-from src.data import build_interactions, read_parquet
-from src.model import PureSVD, artifact_dir, load_meta
+from src.data import read_parquet
+from src.model import BlendRecommender
 from tests.conftest import CUTOFF, DAY
 
-VAL_CUTOFF = CUTOFF - 31 * DAY  # 2019-05-01
+INNER_CUTOFF = CUTOFF - 30 * DAY  # 2019-05-02
 DATA_CONFIG = DataConfig(min_item_ratings=5, positive_threshold=4.0, test_window_days=30,
                          min_user_train_positives=3, cutoff="2019-06-01")
+TRAIN_YAML = "k: 4\ntrain_window: 1y\nblend_weight: 1.0\nrandom_state: 42\n"
 
 
-def synthetic_ratings(n_users=120, n_items=40, seed=0) -> pd.DataFrame:
+def synthetic_ratings(n_users=120, n_items=40, seed=0, months_after=1) -> pd.DataFrame:
     """Two taste groups: even users like movies 1-20, odd users like movies 21-40.
 
-    Each user rates 14 movies of their group (4 or 5 stars) and 4 of the other
-    group (2 stars), spread over January-April, May and June 2019.
+    Each user rates movies of their group with 4 or 5 stars and a few of the
+    other group with 2 stars: 10 ratings in the four months before the last
+    30 days of train, 4 in those last 30 days, and 4 in each 30-day window
+    after the cutoff.
     """
     rng = np.random.default_rng(seed)
     group_a, group_b = np.arange(1, n_items // 2 + 1), np.arange(n_items // 2 + 1, n_items + 1)
+    per_user = 14 + 4 * months_after
     rows = []
     for user in range(1, n_users + 1):
         own, other = (group_a, group_b) if user % 2 == 0 else (group_b, group_a)
-        movies = np.concatenate([rng.choice(own, 14, replace=False), rng.choice(other, 4, replace=False)])
-        ratings = np.concatenate([rng.choice([4.0, 5.0], 14), np.full(4, 2.0)])
-        order = rng.permutation(18)
-        times = np.concatenate([
-            rng.integers(VAL_CUTOFF - 120 * DAY, VAL_CUTOFF, 10),      # before May
-            rng.integers(VAL_CUTOFF, CUTOFF, 4),                        # May: validation window
-            rng.integers(CUTOFF, CUTOFF + 30 * DAY, 4),                 # June: test window
-        ])
-        rows += [(user, int(movies[i]), float(ratings[i]), int(t)) for i, t in zip(order, times)]
+        n_own = per_user - 4
+        movies = np.concatenate([rng.choice(own, n_own, replace=False), rng.choice(other, 4, replace=False)])
+        ratings = np.concatenate([rng.choice([4.0, 5.0], n_own), np.full(4, 2.0)])
+        order = rng.permutation(per_user)
+        times = [rng.integers(INNER_CUTOFF - 120 * DAY, INNER_CUTOFF, 10), rng.integers(INNER_CUTOFF, CUTOFF, 4)]
+        for month in range(months_after):
+            times.append(rng.integers(CUTOFF + month * 30 * DAY, CUTOFF + (month + 1) * 30 * DAY, 4))
+        rows += [(user, int(movies[i]), float(ratings[i]), int(t)) for i, t in zip(order, np.concatenate(times))]
     frame = pd.DataFrame(rows, columns=["userId", "movieId", "rating", "timestamp"])
     return frame.astype({"userId": "int32", "movieId": "int32", "rating": "float32", "timestamp": "int32"})
+
+
+def write_raw(directory, months_after=1):
+    directory.mkdir()
+    synthetic_ratings(months_after=months_after).to_csv(directory / "ratings.csv", index=False)
+    titles = [f"Movie {i} ({1999 if i <= 20 else 2018})" for i in range(1, 41)]
+    pd.DataFrame({"movieId": range(1, 41), "title": titles,
+                  "genres": ["A"] * 20 + ["B"] * 20}).to_csv(directory / "movies.csv", index=False)
 
 
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
     """An empty working directory holding data/processed/2019-06-01 and a small train config."""
     monkeypatch.chdir(tmp_path)
-    raw = tmp_path / "raw"
-    raw.mkdir()
-    synthetic_ratings().to_csv(raw / "ratings.csv", index=False)
-    titles = [f"Movie {i} ({1999 if i <= 20 else 2018})" for i in range(1, 41)]
-    pd.DataFrame({"movieId": range(1, 41), "title": titles,
-                  "genres": ["A"] * 20 + ["B"] * 20}).to_csv(raw / "movies.csv", index=False)
-    prep.run(DATA_CONFIG, source=f"local:{raw}")
-    (tmp_path / "train.yaml").write_text("k_values: [2, 4]\nvalidation_days: 31\nrandom_state: 42\n", encoding="utf-8")
+    write_raw(tmp_path / "raw")
+    prep.run(DATA_CONFIG, source=f"local:{tmp_path / 'raw'}")
+    (tmp_path / "train.yaml").write_text(TRAIN_YAML, encoding="utf-8")
     # The synthetic tastes are far easier than real data; the leakage guard is tested separately.
     monkeypatch.setattr(evaluate, "MAX_PLAUSIBLE_HIT_RATE", 1.1)
     monkeypatch.setattr(evaluate, "MAX_PLAUSIBLE_NDCG", 1.1)
@@ -70,124 +77,117 @@ def run_evaluate(monkeypatch):
     evaluate.main()
 
 
-def read_text(path):
-    with open(path, encoding="utf-8") as f:
-        return f.read()
-
-
-# ---------------------------------------------------------------- validation split
-
-
-def test_validation_config_moves_the_cutoff_back():
-    val = train.validation_config(DATA_CONFIG, 31)
-
-    assert val.cutoff == "2019-05-01"
-    assert val.cutoff_timestamp == VAL_CUTOFF
-    assert val.test_end_timestamp == CUTOFF          # the validation window ends where the test window starts
-    assert val.min_item_ratings == DATA_CONFIG.min_item_ratings
-    assert val.min_user_train_positives == DATA_CONFIG.min_user_train_positives
-
-
-def test_validation_split_stays_before_the_cutoff(workspace):
+def load_frames():
     directory = os.path.join("data", "processed", "2019-06-01")
-    full_train = read_parquet(directory, "train.parquet")
-    movies = read_parquet(directory, "movies.parquet")
+    return (read_parquet(directory, "train.parquet"), read_parquet(directory, "test.parquet"),
+            read_parquet(directory, "movies.parquet"))
 
-    train_val, validation, _ = train.validation_split(full_train, movies, DATA_CONFIG, 31)
 
-    assert len(train_val) and len(validation)
-    assert train_val["timestamp"].max() < VAL_CUTOFF
-    assert validation["timestamp"].min() >= VAL_CUTOFF
-    assert validation["timestamp"].max() < CUTOFF     # nothing from the cutoff onwards
-    assert (validation["rating"] >= 4.0).all()
-    # Every validation row is a row of train: validation is carved out of train, not out of test.
-    full_train = read_parquet(directory, "train.parquet")
-    merged = validation.merge(full_train, on=["userId", "movieId", "rating", "timestamp"], how="left", indicator=True)
-    assert (merged["_merge"] == "both").all()
-    test = read_parquet(directory, "test.parquet")
+def read_json(*parts):
+    with open(os.path.join(*parts), encoding="utf-8") as f:
+        return json.load(f)
+
+
+# ---------------------------------------------------------------- configuration and splits
+
+
+def test_repo_train_config_holds_the_frozen_parameters():
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "configs", "train.yaml")
+
+    assert train.load_train_config(path) == train.TrainConfig(k=64, train_window="1y", blend_weight=4.0, random_state=42)
+
+
+def test_inner_split_stays_before_the_cutoff(workspace):
+    full_train, test, movies = load_frames()
+
+    inner_train, inner_eval, inner_config = train.inner_split(full_train, movies, DATA_CONFIG, 30)
+
+    assert inner_config.cutoff == "2019-05-02" and inner_config.test_end_timestamp == CUTOFF
+    assert len(inner_train) and len(inner_eval)
+    assert inner_train["timestamp"].max() < INNER_CUTOFF          # nothing from the window in the training part
+    assert inner_eval["timestamp"].min() >= INNER_CUTOFF
+    assert inner_eval["timestamp"].max() < CUTOFF                 # nothing from the cutoff onwards
+    assert (inner_eval["rating"] >= 4.0).all()
+    # The window is carved out of train: every row of it is a row of train, none is a row of test.
+    full_train, test, _ = load_frames()
+    keys = ["userId", "movieId", "rating", "timestamp"]
+    assert (inner_eval.merge(full_train, on=keys, how="left", indicator=True)["_merge"] == "both").all()
     assert test["timestamp"].min() >= CUTOFF
 
 
-def test_choose_k_takes_the_best_ndcg_and_the_smaller_k_on_a_tie():
-    assert train.choose_k([{"k": 32, "ndcg_at_10": 0.10}, {"k": 64, "ndcg_at_10": 0.12},
-                           {"k": 128, "ndcg_at_10": 0.11}]) == 64
-    assert train.choose_k([{"k": 64, "ndcg_at_10": 0.12}, {"k": 32, "ndcg_at_10": 0.12}]) == 32
+def test_fit_model_builds_each_type(workspace):
+    full_train, _, _ = load_frames()
+    config = train.TrainConfig(k=4, train_window="1y", blend_weight=1.0)
+
+    blend = train.fit_model(train.BLEND, full_train, DATA_CONFIG, config)
+    popularity = train.fit_model(train.POPULARITY, full_train, DATA_CONFIG, config)
+
+    assert isinstance(blend, BlendRecommender) and blend.svd.k == 4 and blend.svd.blend_weight == 1.0
+    assert isinstance(popularity, PopularityRecommender)
+    assert train.model_params(train.BLEND, config) == {"k": 4, "train_window": "1y", "blend_weight": 1.0,
+                                                       "random_state": 42}
+    assert train.model_params(train.POPULARITY, config) == {}
+    with pytest.raises(ValueError):
+        train.fit_model("two-tower", full_train, DATA_CONFIG, config)
 
 
-# ---------------------------------------------------------------- end to end
+# ---------------------------------------------------------------- evaluation
 
 
-def test_train_writes_the_sweep_and_the_model_without_reading_the_test_set(workspace, monkeypatch):
-    original = train.read_parquet
+def test_evaluate_window_scores_recommenders_on_the_same_users(workspace):
+    full_train, test, _ = load_frames()
+    config = train.TrainConfig(k=4, train_window="1y", blend_weight=1.0)
+    models = {name: train.fit_model(name, full_train, DATA_CONFIG, config) for name in (train.BLEND, train.POPULARITY)}
 
-    def guarded(directory, name):
-        assert name != "test.parquet", "training must not read the test set"
-        return original(directory, name)
+    evaluation = evaluate.evaluate_window(models, test)
 
-    monkeypatch.setattr(train, "read_parquet", guarded)
-    run_train(monkeypatch)
-
-    sweep = pd.read_csv(os.path.join("reports", "2019-06-01", "validation.csv"))
-    assert sweep["k"].tolist() == [2, 4]
-    assert sweep["selected"].sum() == 1
-    assert (sweep["validation_users"] > 0).all()
-    best_k = int(sweep.loc[sweep["ndcg_at_10"].idxmax(), "k"])
-
-    meta = load_meta(artifact_dir("2019-06-01"))
-    stats = json.loads(read_text(os.path.join("data", "processed", "2019-06-01", "stats.json")))
-    assert meta["k"] == best_k == int(sweep.loc[sweep["selected"], "k"].iloc[0])
-    assert meta["train_sha256"] == stats["sha256"]["train.parquet"]
-    assert meta["validation"]["cutoff"] == "2019-05-01"
-    model = PureSVD.load(artifact_dir("2019-06-01"))
-    assert model.item_factors.shape == (meta["n_items"], best_k)
-    full_train = read_parquet(os.path.join("data", "processed", "2019-06-01"), "train.parquet")
-    interactions = build_interactions(full_train, 4.0)
-    assert np.array_equal(model.item_ids, interactions.item_ids)
-    assert np.array_equal(model.user_ids, interactions.user_ids)
-
-
-def test_training_twice_gives_the_same_model_and_sweep(workspace, monkeypatch):
-    run_train(monkeypatch)
-    first_meta = load_meta(artifact_dir("2019-06-01"))
-    first_sweep = read_text(os.path.join("reports", "2019-06-01", "validation.csv"))
-
-    run_train(monkeypatch)
-
-    assert load_meta(artifact_dir("2019-06-01"))["item_factors_sha256"] == first_meta["item_factors_sha256"]
-    assert read_text(os.path.join("reports", "2019-06-01", "validation.csv")) == first_sweep
-
-
-def test_evaluate_writes_metrics_for_both_recommenders(workspace, monkeypatch):
-    run_train(monkeypatch)
-    run_evaluate(monkeypatch)
-
-    path = os.path.join("reports", "2019-06-01", "test_metrics.json")
-    report = json.loads(read_text(path))
-    test = read_parquet(os.path.join("data", "processed", "2019-06-01"), "test.parquet")
-    assert report["evaluated_users"] == test["userId"].nunique()
-    assert report["test_rows"] == len(test)
-    assert report["targets_already_rated_in_train"] == 0
-    assert set(report["models"]) == {"pure_svd", "popularity"}
-    for result in report["models"].values():
-        for name in ("hit_rate_at_10", "recall_at_10", "ndcg_at_10", "long_tail_share"):
-            assert 0.0 <= result[name]["ci95_low"] <= result[name]["value"] <= result[name]["ci95_high"] <= 1.0
-        assert 0.0 < result["catalog_coverage"]["value"] <= 1.0
-    difference = report["difference_pure_svd_minus_popularity"]
+    assert evaluation.users.tolist() == sorted(test["userId"].unique())
+    assert evaluation.targets.sum() == len(test)
+    for name, recs in evaluation.recommendations.items():
+        assert recs.shape == (len(evaluation.users), 10)
+        # No recommended movie was already rated in train.
+        seen = models[name].seen[np.searchsorted(models[name].user_ids, evaluation.users)].toarray() > 0
+        assert not np.take_along_axis(seen, recs, axis=1).any()
+    for result in evaluation.results.values():
+        for metric in ("hit_rate_at_10", "recall_at_10", "ndcg_at_10", "long_tail_share"):
+            assert 0.0 <= result[metric]["ci95_low"] <= result[metric]["value"] <= result[metric]["ci95_high"] <= 1.0
+    difference = evaluation.difference(train.BLEND, train.POPULARITY)
     assert difference["ndcg_at_10"]["value"] == pytest.approx(
-        report["models"]["pure_svd"]["ndcg_at_10"]["value"] - report["models"]["popularity"]["ndcg_at_10"]["value"])
+        evaluation.results["blend"]["ndcg_at_10"]["value"] - evaluation.results["popularity"]["ndcg_at_10"]["value"])
     # Users have clear tastes here, so the model must beat popularity; a failure means the pipeline is broken.
     assert difference["ndcg_at_10"]["ci95_low"] > 0
 
-    examples = json.loads(read_text(os.path.join("reports", "2019-06-01", "examples.json")))
-    assert len(examples) == 3
-    for example in examples:
-        assert len(example["pure_svd_top_10"]) == 10 and len(example["popularity_top_10"]) == 10
-        assert len(example["last_liked_in_train"]) <= 5
-        assert not set(example["pure_svd_top_10"]) & set(example["last_liked_in_train"])
 
-    # Evaluating again reproduces the report exactly.
+def test_evaluate_window_rejects_models_fitted_on_different_data(workspace):
+    full_train, test, _ = load_frames()
+    popularity = PopularityRecommender.fit(full_train, CUTOFF, 4.0)
+    other = PopularityRecommender.fit(full_train[full_train["movieId"] != full_train["movieId"].iloc[0]], CUTOFF, 4.0)
+
+    with pytest.raises(ValueError, match="same training data"):
+        evaluate.evaluate_window({"a": popularity, "b": other}, test)
+
+
+# ---------------------------------------------------------------- command line
+
+
+def test_train_and_evaluate_commands(workspace, monkeypatch):
+    run_train(monkeypatch)
+
+    meta = read_json(train.artifact_dir("2019-06-01"), train.META_FILE)
+    stats = read_json("data", "processed", "2019-06-01", "stats.json")
+    assert meta["model_type"] == "blend" and meta["k"] == 4 and meta["train_window"] == "1y"
+    assert meta["train_sha256"] == stats["sha256"]["train.parquet"]
+
     run_evaluate(monkeypatch)
-    assert read_text(path) == json.dumps(report, indent=2) + "\n"
+    report = read_json(train.artifact_dir("2019-06-01"), evaluate.EVALUATION_FILE)
+    assert set(report["models"]) == {"blend", "popularity"}
+    assert report["evaluated_users"] > 0
+
+    # Training and evaluating again gives the same model and the same numbers.
+    run_train(monkeypatch)
+    assert read_json(train.artifact_dir("2019-06-01"), train.META_FILE)["item_factors_sha256"] == meta["item_factors_sha256"]
+    run_evaluate(monkeypatch)
+    assert read_json(train.artifact_dir("2019-06-01"), evaluate.EVALUATION_FILE) == report
 
 
 def test_evaluate_refuses_an_implausible_result(workspace, monkeypatch):
@@ -197,19 +197,7 @@ def test_evaluate_refuses_an_implausible_result(workspace, monkeypatch):
     with pytest.raises(SystemExit, match="suspect leakage"):
         run_evaluate(monkeypatch)
 
-    assert not os.path.exists(os.path.join("reports", "2019-06-01", "test_metrics.json"))
-
-
-def test_evaluate_refuses_a_model_trained_on_other_data(workspace, monkeypatch):
-    run_train(monkeypatch)
-    meta_path = os.path.join(artifact_dir("2019-06-01"), "model_meta.json")
-    meta = json.loads(read_text(meta_path))
-    meta["train_sha256"] = "0" * 64
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(meta, f)
-
-    with pytest.raises(SystemExit, match="different train.parquet"):
-        run_evaluate(monkeypatch)
+    assert not os.path.exists(os.path.join(train.artifact_dir("2019-06-01"), evaluate.EVALUATION_FILE))
 
 
 def test_missing_processed_data_without_r2_is_a_clear_error(tmp_path, monkeypatch):

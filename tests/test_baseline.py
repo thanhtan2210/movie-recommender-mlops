@@ -2,7 +2,7 @@ import numpy as np
 from scipy import sparse
 
 from src import baseline
-from src.model import NO_RECOMMENDATION
+from src.recommender import NO_RECOMMENDATION
 from tests.conftest import CUTOFF, DAY, ratings_frame
 
 ITEM_IDS = np.array([10, 20, 30, 40])

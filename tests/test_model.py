@@ -1,12 +1,9 @@
-import json
-import os
-
 import numpy as np
 import pytest
 from scipy import sparse
 
-from src.model import (META_FILE, NO_RECOMMENDATION, PureSVD, load_meta, popularity_boost,
-                       standardise_rows, top_n)
+from src.model import PureSVD, popularity_boost, standardise_rows, top_n
+from src.recommender import NO_RECOMMENDATION
 
 # Two groups of users with disjoint tastes: users 0-2 like movies 0 and 1,
 # users 3-5 like movies 2 and 3. With k = 2 the factors span the two blocks,
@@ -27,7 +24,7 @@ def rows(*vectors):
 
 @pytest.fixture
 def model():
-    return PureSVD.fit(BLOCKS, k=2, random_state=42, item_ids=np.array([10, 20, 30, 40]), user_ids=np.arange(6))
+    return PureSVD.fit(BLOCKS, k=2, random_state=42)
 
 
 def test_scores_match_the_hand_computed_projection(model):
@@ -79,24 +76,6 @@ def test_same_seed_gives_the_same_factors():
     assert first.k == 5
 
 
-def test_save_and_load_give_the_same_scores(model, tmp_path):
-    directory = str(tmp_path / "artifacts" / "2019-06-01")
-    model.save(directory, {"train_sha256": "abc", "train_seconds": 1.5})
-
-    loaded = PureSVD.load(directory)
-    liked = rows([1, 0, 0, 0], [0, 0, 1, 1])
-
-    assert np.array_equal(loaded.score(liked), model.score(liked))
-    assert loaded.item_ids.tolist() == [10, 20, 30, 40]
-    assert loaded.user_ids.tolist() == list(range(6))
-    meta = load_meta(directory)
-    assert meta["k"] == 2 and meta["n_items"] == 4 and meta["n_users"] == 6
-    assert meta["train_sha256"] == "abc"
-    assert meta["item_factors_sha256"] == model.factors_sha256()
-    with open(os.path.join(directory, META_FILE), encoding="utf-8") as f:
-        assert json.load(f) == meta
-
-
 # ---------------------------------------------------------------- blend with recent popularity
 
 
@@ -146,18 +125,4 @@ def test_a_large_weight_approaches_the_popularity_order(model):
 
 def test_blend_weight_needs_a_boost(model):
     with pytest.raises(ValueError):
-        PureSVD(model.item_factors, model.item_ids, blend_weight=1.0)
-
-
-def test_blended_model_survives_save_and_load(model, tmp_path):
-    boost = popularity_boost(np.array([5, 1, 50, 10]))
-    blended = model.with_blend(boost, 0.5)
-    directory = str(tmp_path / "blend")
-
-    blended.save(directory, {"train_window": "1y"})
-    loaded = PureSVD.load(directory)
-
-    liked = rows([1, 0, 0, 0], [0, 0, 1, 1])
-    assert loaded.blend_weight == 0.5
-    assert np.array_equal(loaded.score(liked), blended.score(liked))
-    assert load_meta(directory)["blend_weight"] == 0.5 and load_meta(directory)["train_window"] == "1y"
+        PureSVD(model.item_factors, blend_weight=1.0)

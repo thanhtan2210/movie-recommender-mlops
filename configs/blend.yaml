@@ -1,3 +1,0 @@
-k: 64                                   # fixed: the k sweep showed it matters little
-train_windows: [all, 3y, 1y]            # ratings used for the liked matrix: all of train, or the last 3 / 1 years
-blend_weights: [0, 0.25, 0.5, 1, 2, 4]  # weight of recent popularity in the score; 0 is plain PureSVD

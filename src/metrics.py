@@ -8,7 +8,7 @@ from typing import Any, Dict
 
 import numpy as np
 
-from src.model import NO_RECOMMENDATION
+from src.recommender import NO_RECOMMENDATION
 
 BOOTSTRAP_SAMPLES = 1000
 SEED = 42

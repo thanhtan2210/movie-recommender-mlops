@@ -26,10 +26,8 @@ pip install -r requirements.txt
 python -m pytest -q
 python -m src.prepare --cutoff 2019-06-01            # reads raw/ from R2, writes data/processed/2019-06-01/
 python -m src.prepare --cutoff 2019-06-01 --upload   # also uploads to R2 at processed/2019-06-01/
-python -m src.train --cutoff 2019-06-01              # choose k on validation, fit, save artifacts/2019-06-01/
-python -m src.evaluate --cutoff 2019-06-01           # test metrics -> reports/2019-06-01/
-python -m src.diagnose --cutoff 2019-06-01           # diagnostics by release year
-python -m src.blend --cutoff 2019-06-01              # choose the popularity blend on validation, score on test
+python -m src.train --cutoff 2019-06-01              # fit the model (frozen parameters), save artifacts/2019-06-01/
+python -m src.evaluate --cutoff 2019-06-01           # model and popularity on the test window
 ```
 
 `--source local:<directory>` reads `ratings.csv` and `movies.csv` from disk instead of R2. R2 credentials go in a `.env` file (see [.env.example](.env.example)).
@@ -37,6 +35,8 @@ python -m src.blend --cutoff 2019-06-01              # choose the popularity ble
 Output: `train.parquet`, `test.parquet`, `movies.parquet` and `stats.json` (row, user and movie counts, rows removed by each test filter, sha256 of each parquet file, git commit). Running the same cutoff again produces byte-identical parquet files. An upload never overwrites: files with the same sha256 are skipped, and a different file under the same cutoff stops the upload.
 
 ## Results
+
+The files in [reports/2019-06-01/](reports/2019-06-01/) are a historical record of how the model was chosen. They were produced by the selection scripts of commits `60d138c` and `cd96837` (`src/train.py` with a k sweep, `src/diagnose.py`, `src/blend.py`), which have since been replaced by a single model with frozen parameters ([configs/train.yaml](configs/train.yaml)). The current `src.train` + `src.evaluate` reproduce the blend and popularity rows of the test table below exactly.
 
 Cutoff 2019-06-01. Train: ratings before the cutoff. Test: the 9,727 liked ratings of 1,407 users in June 2019. Intervals are 95% bootstrap intervals over users (1,000 resamples); differences are paired (the same resampled users for both recommenders). All files are in [reports/2019-06-01/](reports/2019-06-01/).
 

@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from src import metrics
-from src.model import NO_RECOMMENDATION
+from src.recommender import NO_RECOMMENDATION
 
 N_ITEMS = 10
 

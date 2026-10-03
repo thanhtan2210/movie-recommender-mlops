@@ -6,7 +6,8 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 
-from src.model import NO_RECOMMENDATION
+from src.data import build_interactions
+from src.recommender import NO_RECOMMENDATION, Recommender
 
 WINDOW_DAYS = 90
 
@@ -45,3 +46,18 @@ def recommend(ranking: np.ndarray, seen_rows: sparse.csr_matrix, n: int = 10) ->
         picks = head[~np.isin(head, seen)][:n]
         out[user, :len(picks)] = picks
     return out
+
+
+class PopularityRecommender(Recommender):
+    """The popularity ranking, minus what each user has already rated."""
+    model_type = "popularity"
+
+    @classmethod
+    def fit(cls, train: pd.DataFrame, cutoff_timestamp: int, positive_threshold: float) -> "PopularityRecommender":
+        interactions = build_interactions(train, positive_threshold)
+        ranking = popularity_ranking(train, interactions.item_ids, cutoff_timestamp, positive_threshold)
+        return cls(user_ids=interactions.user_ids, item_ids=interactions.item_ids, seen=interactions.seen,
+                   popularity_ranking=ranking)
+
+    def _recommend_rows(self, rows: np.ndarray, n: int) -> np.ndarray:
+        return recommend(self.popularity_ranking, self.seen[rows], n)
