@@ -200,13 +200,16 @@ def cli(raw_dir, isolated_cwd, monkeypatch):
     return run
 
 
-def test_cli_writes_the_cutoff_directory(cli, capsys):
+def test_cli_writes_the_cutoff_directory(cli, capsys, monkeypatch):
+    # Without --remote, R2 is never contacted, even if credentials are available.
+    monkeypatch.setattr(Storage, "from_env", classmethod(lambda cls: pytest.fail("R2 must not be used")))
     cli("--cutoff", "2019-06-01")
 
     out_dir = os.path.join("data", "processed", "2019-06-01")
     assert os.path.exists(os.path.join(out_dir, "stats.json"))
     output = capsys.readouterr().out
     assert "Test filter steps" in output
+    assert "only (pass --remote to upload to R2)" in output
     # The repo config asks for 50 ratings per movie; the tiny fixture has none, and the CLI says so.
     assert "WARNING: the test set has only 0 rows" in output
 
@@ -214,12 +217,12 @@ def test_cli_writes_the_cutoff_directory(cli, capsys):
 def test_cli_upload_is_idempotent_and_never_overwrites(cli, storage, monkeypatch, capsys):
     monkeypatch.setattr(Storage, "from_env", classmethod(lambda cls: storage))
 
-    cli("--cutoff", "2019-06-01", "--upload")
+    cli("--cutoff", "2019-06-01", "--remote")
     assert sorted(storage.list_objects("processed/2019-06-01/")) == [
         f"processed/2019-06-01/{name}" for name in ["movies.parquet", "stats.json", "test.parquet", "train.parquet"]]
 
     uploads_before = len(storage.client.uploads)
-    cli("--cutoff", "2019-06-01", "--upload")
+    cli("--cutoff", "2019-06-01", "--remote")
     assert len(storage.client.uploads) == uploads_before
     assert capsys.readouterr().out.count("skipped") == 4
 
@@ -243,7 +246,7 @@ def test_cli_stops_early_without_r2_credentials(cli, monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
     with pytest.raises(SystemExit, match="Missing environment variables"):
-        cli("--cutoff", "2019-06-01", "--upload")
+        cli("--cutoff", "2019-06-01", "--remote")
 
     # Nothing was computed: the check runs before the data is read.
     assert not os.path.exists(os.path.join("data", "processed"))

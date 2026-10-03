@@ -13,9 +13,13 @@
 The first run registers popularity as the initial champion.
 
 Run from the repo root:
-  python -m src.pipeline --cutoff 2019-07-01 [--source local:<dir>]
+  python -m src.pipeline --cutoff 2019-07-01 [--source local:<dir>] [--remote]
 
-Writes reports/<C>/gate.json and reports/<C>/production.json, and logs every model to MLflow.
+By default nothing leaves the machine: runs go to a local MLflow store
+(mlflow.db) and nothing is uploaded to R2. Only --remote logs to DagsHub and
+uploads processed/<C>/ to R2.
+
+Writes reports/<C>/gate.json and reports/<C>/production.json.
 """
 import argparse
 import json
@@ -63,12 +67,22 @@ def write_json(path: str, payload: Dict[str, Any]) -> None:
         f.write("\n")
 
 
-def connect_storage() -> Optional[Storage]:
-    """R2, or None when it is not configured (then nothing is uploaded)."""
+def connect_storage() -> Storage:
     try:
         return Storage.from_env()
-    except RuntimeError:
-        return None
+    except RuntimeError as error:
+        raise SystemExit(f"{error} Or read the raw data from disk with --source local:<directory>.")
+
+
+def describe_destinations(remote: bool, tracking_uri: str, storage: Optional[Storage], cutoff: str) -> str:
+    """What this run will write to, shown before anything is computed."""
+    if remote:
+        return (f"Writing to (--remote):\n"
+                f"  MLflow: {tracking_uri}\n"
+                f"  R2    : s3://{storage.bucket}/{PROCESSED_PREFIX}/{cutoff}/")
+    return (f"Writing locally only (pass --remote to log to DagsHub and upload to R2):\n"
+            f"  MLflow: {tracking_uri}\n"
+            f"  R2    : no upload")
 
 
 def run_params(model_type: str, train_config: TrainConfig, cutoff: str, trained_before: str,
@@ -81,20 +95,20 @@ def window(first_timestamp: int, end_timestamp: int) -> Dict[str, str]:
     return {"from": iso(first_timestamp), "to_exclusive": iso(end_timestamp)}
 
 
-def run_pipeline(cutoff: str, source: str = "r2") -> Dict[str, Any]:
-    tracking_uri = tracking.setup()
+def run_pipeline(cutoff: str, source: str = "r2", remote: bool = False) -> Dict[str, Any]:
+    tracking_uri = tracking.setup(remote=remote)
     train_config = load_train_config()
     config: DataConfig = load_data_config(cutoff=cutoff)
-    storage = connect_storage()
-    if storage is None and source == "r2":
-        raise SystemExit("R2 is not configured: set the variables of .env.example, or pass --source local:<directory>.")
+    # R2 is only contacted to read the raw data (source "r2") or, with --remote, to upload.
+    storage = connect_storage() if (remote or source == "r2") else None
+    print(describe_destinations(remote, tracking_uri, storage, cutoff))
 
     # ---- 1. Prepare the data for this cutoff.
     print(f"[1/5] Preparing cutoff {cutoff} from {source}")
     out_dir, stats = run_prepare(config, source, storage=storage)
     stats_path = os.path.join(out_dir, STATS_FILE)
     uploaded = None
-    if storage is not None:
+    if remote:
         try:
             uploaded = upload_directory(storage, out_dir, f"{PROCESSED_PREFIX}/{cutoff}", DATA_FILES)
         except RemoteConflictError as error:
@@ -225,8 +239,10 @@ def main():
     parser = argparse.ArgumentParser(description="Prepare, gate, refit and evaluate for one cutoff.")
     parser.add_argument("--cutoff", required=True, help="YYYY-MM-DD (UTC)")
     parser.add_argument("--source", default="r2", help="'r2' (default) or 'local:<directory with ratings.csv and movies.csv>'")
+    parser.add_argument("--remote", action="store_true",
+                        help="log to MLflow on DagsHub and upload processed/<cutoff>/ to R2 (default: local only)")
     args = parser.parse_args()
-    run_pipeline(args.cutoff, args.source)
+    run_pipeline(args.cutoff, args.source, args.remote)
 
 
 if __name__ == "__main__":

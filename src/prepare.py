@@ -5,7 +5,7 @@
           movies the model can know from train
 
 Run from the repo root:
-  python -m src.prepare --cutoff 2019-06-01 [--source local:<dir>] [--upload]
+  python -m src.prepare --cutoff 2019-06-01 [--source local:<dir>] [--remote]
 
 Writes data/processed/<cutoff>/{train,test,movies}.parquet and stats.json.
 Running it again with the same cutoff produces byte-identical parquet files.
@@ -315,24 +315,28 @@ def main():
     parser.add_argument("--cutoff", help="YYYY-MM-DD (UTC); overrides configs/data.yaml")
     parser.add_argument("--source", default="r2", help="'r2' (default) or 'local:<directory with ratings.csv and movies.csv>'")
     parser.add_argument("--config", default=DATA_CONFIG_PATH)
-    parser.add_argument("--upload", action="store_true", help="upload the result to R2 at processed/<cutoff>/")
+    parser.add_argument("--remote", action="store_true",
+                        help="upload the result to R2 at processed/<cutoff>/ (default: write locally only)")
     args = parser.parse_args()
 
     config = load_data_config(args.config, cutoff=args.cutoff)
     storage = None
-    if args.upload or args.source == "r2":
+    if args.remote or args.source == "r2":
         # Fail before the long computation if R2 is not configured.
         try:
             storage = Storage.from_env()
         except RuntimeError as error:
             raise SystemExit(str(error))
+    prefix = f"{PROCESSED_PREFIX}/{config.cutoff}"
     print(f"Preparing cutoff {config.cutoff} from {args.source}")
+    print(f"Writing to: {os.path.join(PROCESSED_DIR, config.cutoff)}"
+          + (f" and s3://{storage.bucket}/{prefix}/ (--remote)" if args.remote
+             else " only (pass --remote to upload to R2)"))
     out_dir, stats = run(config, args.source, storage=storage)
     print_summary(stats)
     print(f"Saved {out_dir} in {stats['duration_seconds']} s")
 
-    if args.upload:
-        prefix = f"{PROCESSED_PREFIX}/{config.cutoff}"
+    if args.remote:
         try:
             result = upload_directory(storage, out_dir, prefix, DATA_FILES)
         except RemoteConflictError as error:

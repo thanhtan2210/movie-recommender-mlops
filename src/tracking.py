@@ -1,8 +1,10 @@
-"""Experiment tracking and model registry on MLflow (DagsHub, or a local file when not configured).
+"""Experiment tracking and model registry on MLflow: a local file by default, DagsHub with remote=True.
 
 Every run logs: parameters (model type and its parameters, cutoff, sha256 of
-the training data, git commit), metrics with their interval bounds, the
-pyfunc model, the data's stats.json, and a `window` tag (gate or production).
+the training data, git commit), metrics with their interval bounds and a
+`window` tag (gate or production). Only a run whose model is registered also
+uploads the pyfunc model and the data's stats.json; evaluation-only runs
+carry no artifacts.
 
 The registry holds one model, `movie-recommender`. The version in use is
 marked as champion with an alias and, for servers without alias support,
@@ -44,15 +46,20 @@ SIGNATURE = ModelSignature(
 )
 
 
-def setup(tracking_uri: Optional[str] = None) -> str:
-    """Point MLflow at DagsHub when MLFLOW_TRACKING_URI is set (environment or .env), else at a local file."""
+def setup(remote: bool = False, tracking_uri: Optional[str] = None) -> str:
+    """Point MLflow at the local store, or at the server of MLFLOW_TRACKING_URI when remote=True.
+
+    A .env file with DagsHub credentials is never enough to write there: the
+    caller has to ask for it explicitly.
+    """
     if tracking_uri is None:
-        load_dotenv()
-        tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
-        if not tracking_uri:
-            print(f"WARNING: MLFLOW_TRACKING_URI is not set; tracking locally in {LOCAL_TRACKING_URI}. "
-                  "Set MLFLOW_TRACKING_URI, MLFLOW_TRACKING_USERNAME and MLFLOW_TRACKING_PASSWORD "
-                  "in .env to log to DagsHub.")
+        if remote:
+            load_dotenv()
+            tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
+            if not tracking_uri:
+                raise SystemExit("--remote needs MLFLOW_TRACKING_URI, MLFLOW_TRACKING_USERNAME and "
+                                 "MLFLOW_TRACKING_PASSWORD in the environment or in .env (see .env.example).")
+        else:
             tracking_uri = LOCAL_TRACKING_URI
     mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_registry_uri(tracking_uri)
@@ -95,19 +102,24 @@ class LoggedRun:
 def log_run(run_name: str, recommender: Recommender, params: Dict[str, Any], tags: Dict[str, str],
             stats_path: str, result: Optional[Dict[str, Any]] = None, register: bool = False,
             version_tags: Optional[Dict[str, str]] = None) -> LoggedRun:
-    """Log one run with its model. With register=True the model also becomes a new registry version."""
+    """Log one run: parameters, tags and metrics.
+
+    With register=True the model and the data's stats.json are uploaded too and
+    the model becomes a new registry version. Evaluation-only runs upload nothing.
+    """
     with mlflow.start_run(run_name=run_name) as run:
         mlflow.log_params({"model_type": recommender.model_type, **params})
         mlflow.set_tags(tags)
         if result is not None:
             mlflow.log_metrics(flatten_metrics(result))
-        mlflow.log_artifact(stats_path)
-        workdir = tempfile.mkdtemp(prefix="pyfunc_")
-        try:
-            # Saved locally and uploaded as plain artifacts: works on any MLflow server version.
-            mlflow.log_artifacts(save_pyfunc(recommender, workdir), artifact_path=MODEL_ARTIFACT_PATH)
-        finally:
-            shutil.rmtree(workdir, ignore_errors=True)
+        if register:
+            mlflow.log_artifact(stats_path)
+            workdir = tempfile.mkdtemp(prefix="pyfunc_")
+            try:
+                # Saved locally and uploaded as plain artifacts: works on any MLflow server version.
+                mlflow.log_artifacts(save_pyfunc(recommender, workdir), artifact_path=MODEL_ARTIFACT_PATH)
+            finally:
+                shutil.rmtree(workdir, ignore_errors=True)
         logged = LoggedRun(run_id=run.info.run_id, model_source=f"{run.info.artifact_uri}/{MODEL_ARTIFACT_PATH}")
 
     if register:

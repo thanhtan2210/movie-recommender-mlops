@@ -26,7 +26,7 @@ def local_mlflow(tmp_path, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(tracking, "load_dotenv", lambda: None)
     # An absolute path per test: MLflow caches stores by URI, so a relative one would be shared.
-    uri = tracking.setup(f"sqlite:///{(tmp_path / 'mlflow.db').as_posix()}")
+    uri = tracking.setup(tracking_uri=f"sqlite:///{(tmp_path / 'mlflow.db').as_posix()}")
     yield uri
     mlflow.set_tracking_uri(None)
     os.environ.pop("MLFLOW_TRACKING_URI", None)  # mlflow.set_tracking_uri exports it; do not leak into other tests
@@ -57,29 +57,36 @@ def fake_result():
     return metrics.evaluate(recommended, targets, np.zeros(5, dtype=bool), metrics.bootstrap_indices(2))
 
 
-def test_setup_falls_back_to_a_local_store_with_a_warning(tmp_path, monkeypatch, capsys):
+def test_setup_is_local_by_default_even_when_a_server_is_configured(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
-    monkeypatch.setattr(tracking, "load_dotenv", lambda: None)
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "https://dagshub.example/user/repo.mlflow")
+    monkeypatch.setattr(tracking, "load_dotenv", lambda: pytest.fail(".env must not be read without remote=True"))
 
     uri = tracking.setup()
 
     assert uri == tracking.LOCAL_TRACKING_URI == mlflow.get_tracking_uri()
-    assert "WARNING: MLFLOW_TRACKING_URI is not set" in capsys.readouterr().out
     assert mlflow.get_experiment_by_name(tracking.EXPERIMENT) is not None
     mlflow.set_tracking_uri(None)
     os.environ.pop("MLFLOW_TRACKING_URI", None)
 
 
-def test_setup_uses_the_configured_server(tmp_path, monkeypatch, capsys):
+def test_remote_setup_needs_a_configured_server(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+    monkeypatch.setattr(tracking, "load_dotenv", lambda: None)
+
+    with pytest.raises(SystemExit, match="--remote needs MLFLOW_TRACKING_URI"):
+        tracking.setup(remote=True)
+
+
+def test_remote_setup_uses_the_configured_server(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(tracking, "load_dotenv", lambda: None)
     monkeypatch.setenv("MLFLOW_TRACKING_URI", f"sqlite:///{(tmp_path / 'other.db').as_posix()}")
 
-    uri = tracking.setup()
+    uri = tracking.setup(remote=True)
 
     assert uri.endswith("other.db") and mlflow.get_tracking_uri() == uri
-    assert "WARNING" not in capsys.readouterr().out
     mlflow.set_tracking_uri(None)
     os.environ.pop("MLFLOW_TRACKING_URI", None)
 
@@ -99,13 +106,24 @@ def test_pyfunc_round_trip_gives_the_same_recommendations(name, request, tmp_pat
     assert loaded.predict(np.array([999]), params={"n": 3}).tolist() == [[50, 10, 20]]
 
 
-def test_log_run_records_params_metrics_tags_and_artifacts(local_mlflow, blend, stats_path):
+def test_evaluation_only_run_logs_params_metrics_and_tags_but_no_artifacts(local_mlflow, blend, stats_path):
+    logged = tracking.log_run("gate-challenger", blend, {"k": 2, "cutoff": "2019-07-01"}, {"window": "gate"},
+                              stats_path, result=fake_result())
+
+    run = MlflowClient().get_run(logged.run_id)
+    assert run.data.params["model_type"] == "blend" and run.data.tags["window"] == "gate"
+    assert "ndcg_at_10" in run.data.metrics
+    assert MlflowClient().list_artifacts(logged.run_id) == []
+    assert logged.version is None
+
+
+def test_registered_run_records_params_metrics_tags_and_artifacts(local_mlflow, blend, stats_path):
     result = fake_result()
 
-    logged = tracking.log_run("gate-challenger", blend,
+    logged = tracking.log_run("production-champion", blend,
                               params={"k": 2, "train_window": "1y", "blend_weight": 0.5, "cutoff": "2019-07-01",
                                       "train_sha256": "abc", "git_commit": "deadbeef"},
-                              tags={"window": "gate"}, stats_path=stats_path, result=result)
+                              tags={"window": "gate"}, stats_path=stats_path, result=result, register=True)
 
     run = MlflowClient().get_run(logged.run_id)
     assert run.data.params["model_type"] == "blend" and run.data.params["k"] == "2"
@@ -117,7 +135,7 @@ def test_log_run_records_params_metrics_tags_and_artifacts(local_mlflow, blend, 
     assert "catalog_coverage" in run.data.metrics
     artifacts = {item.path for item in MlflowClient().list_artifacts(logged.run_id)}
     assert {"model", "stats.json"} <= artifacts
-    assert logged.version is None
+    assert logged.version == "1"
 
     # The logged model loads and recommends like the original.
     loaded = mlflow.pyfunc.load_model(f"runs:/{logged.run_id}/model")

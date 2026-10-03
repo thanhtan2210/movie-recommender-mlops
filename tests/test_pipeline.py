@@ -15,6 +15,13 @@ from tests.test_train_evaluate import TRAIN_YAML, write_raw
 DATA_YAML = ("min_item_ratings: 5\npositive_threshold: 4.0\ntest_window_days: 30\n"
              "min_user_train_positives: 3\ncutoff: \"2019-06-01\"\n")
 NEXT_CUTOFF = CUTOFF + 30 * DAY  # 2019-07-01
+REAL_CONNECT_STORAGE = pipeline.connect_storage
+
+
+@pytest.fixture
+def remote_calls():
+    """The `remote` argument of every tracking.setup() call made by the pipeline."""
+    return []
 
 
 def difference(low, value=0.01, high=0.02):
@@ -50,7 +57,7 @@ def test_gate_keeps_a_champion_of_the_same_type():
 
 
 @pytest.fixture
-def project(tmp_path, monkeypatch):
+def project(tmp_path, monkeypatch, remote_calls):
     """A working directory with raw data (two months after the first cutoff), configs and a local MLflow store."""
     monkeypatch.chdir(tmp_path)
     write_raw(tmp_path / "raw", months_after=2)
@@ -60,9 +67,14 @@ def project(tmp_path, monkeypatch):
     monkeypatch.setattr(evaluate, "MAX_PLAUSIBLE_HIT_RATE", 1.1)
     monkeypatch.setattr(evaluate, "MAX_PLAUSIBLE_NDCG", 1.1)
     # No R2 and no DagsHub: the developer's .env must not be picked up.
-    monkeypatch.setattr(pipeline, "connect_storage", lambda: None)
+    monkeypatch.setattr(pipeline, "connect_storage", lambda: pytest.fail("R2 must not be contacted"))
     uri = f"sqlite:///{(tmp_path / 'mlflow.db').as_posix()}"
-    monkeypatch.setattr(tracking, "setup", lambda tracking_uri=None, _setup=tracking.setup: _setup(uri))
+
+    def setup(remote=False, tracking_uri=None, _setup=tracking.setup):
+        remote_calls.append(remote)
+        return _setup(tracking_uri=uri)
+
+    monkeypatch.setattr(tracking, "setup", setup)
     yield tmp_path
     mlflow.set_tracking_uri(None)
     os.environ.pop("MLFLOW_TRACKING_URI", None)
@@ -77,7 +89,7 @@ def read_report(cutoff, name):
         return json.load(f)
 
 
-def test_first_run_registers_popularity_then_promotes_the_challenger(project):
+def test_first_run_registers_popularity_then_promotes_the_challenger(project, remote_calls):
     outcome = run("2019-06-01", project)
 
     gate = read_report("2019-06-01", "gate.json")
@@ -103,11 +115,18 @@ def test_first_run_registers_popularity_then_promotes_the_challenger(project):
     assert champion["version"] == "2" and champion["model_type"] == "blend"
     assert champion["tags"]["gate_decision"] == "promote" and champion["tags"]["cutoff"] == "2019-06-01"
 
+    # Nothing was sent anywhere: local tracking, no upload.
+    assert remote_calls == [False]
+    assert production["r2_upload"] is None
+
     # Runs: initial champion, two gate runs, champion and baseline on the production window.
     client = MlflowClient()
     experiment = client.get_experiment_by_name(tracking.EXPERIMENT)
     runs = client.search_runs([experiment.experiment_id])
     assert sorted(r.data.tags["window"] for r in runs) == ["gate", "gate", "gate", "production", "production"]
+    # Only the registered runs carry the model; evaluation-only runs have no artifacts.
+    with_model = {r.info.run_name for r in runs if client.list_artifacts(r.info.run_id)}
+    assert with_model == {"initial-champion-popularity", "production-champion-blend"}
     by_name = {r.info.run_name: r for r in runs}
     challenger = by_name["gate-challenger-blend"]
     assert challenger.data.params["trained_before"] == "2019-05-02" and challenger.data.params["k"] == "4"
@@ -173,6 +192,33 @@ def test_champion_is_kept_when_the_challenger_does_not_clear_the_gate(project, m
     assert tracking.get_champion()["tags"]["gate_decision"] == "keep"
 
 
-def test_pipeline_needs_r2_or_a_local_source(project):
-    with pytest.raises(SystemExit, match="R2 is not configured"):
+def test_remote_run_uploads_to_r2_and_says_so(project, storage, remote_calls, monkeypatch, capsys):
+    monkeypatch.setattr(pipeline, "connect_storage", lambda: storage)
+
+    pipeline.run_pipeline("2019-06-01", source=f"local:{project / 'raw'}", remote=True)
+
+    assert remote_calls == [True]
+    output = capsys.readouterr().out
+    assert "Writing to (--remote):" in output and "s3://test-bucket/processed/2019-06-01/" in output
+    assert sorted(storage.list_objects("processed/2019-06-01/")) == [
+        f"processed/2019-06-01/{name}" for name in ["movies.parquet", "stats.json", "test.parquet", "train.parquet"]]
+    assert read_report("2019-06-01", "production.json")["r2_upload"]["train.parquet"] == "uploaded"
+
+
+def test_local_run_says_where_it_writes(project, capsys):
+    run("2019-06-01", project)
+
+    output = capsys.readouterr().out
+    assert "Writing locally only (pass --remote to log to DagsHub and upload to R2)" in output
+    assert "R2    : no upload" in output
+
+
+def test_reading_raw_data_from_r2_needs_credentials(project, monkeypatch):
+    from src import config as cfg
+    monkeypatch.setattr(pipeline, "connect_storage", REAL_CONNECT_STORAGE)
+    monkeypatch.setattr(cfg, "load_dotenv", lambda: None)
+    for name in cfg.R2_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(SystemExit, match="Missing environment variables"):
         pipeline.run_pipeline("2019-06-01")
