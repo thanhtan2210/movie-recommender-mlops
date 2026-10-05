@@ -134,6 +134,12 @@ class BlendRecommender(Recommender):
     def _recommend_rows(self, rows: np.ndarray, n: int) -> np.ndarray:
         return self.svd.recommend(self.liked[rows], self.seen[rows], n)
 
+    def personalises(self, user_id: int) -> bool:
+        # A known user with no liked rating inside the training window has constant SVD
+        # scores, so only the popularity term ranks their movies.
+        row = self.row_of(user_id)
+        return row is not None and bool(self.liked.indptr[row + 1] > self.liked.indptr[row])
+
     def _fold_in(self, columns: np.ndarray, n: int) -> np.ndarray:
         # The same scoring as for a known user whose liked (and rated) movies are exactly `columns`.
         shape = (1, len(self.item_ids))

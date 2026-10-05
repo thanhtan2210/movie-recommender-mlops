@@ -5,6 +5,7 @@
     "version": "2",
     "cutoff": "2019-07-01",
     "users": 160199,
+    "users_with_liked_ratings_in_window": 11567,
     "movies": 12930
   },
   "protocol": {
@@ -16,27 +17,34 @@
   },
   "get_recommend_user": {
     "requests": 200,
-    "p50_ms": 5.2119499996479135,
-    "p95_ms": 6.44207000186725,
-    "p99_ms": 7.727736998931503,
-    "mean_ms": 5.348574000308872
+    "p50_ms": 4.430899998624227,
+    "p95_ms": 5.54288000203087,
+    "p99_ms": 7.331150001446076,
+    "mean_ms": 4.622060500059888,
+    "strategies": {
+      "popularity_fallback": 189,
+      "personalized": 11
+    }
   },
   "post_recommend": {
     "requests": 50,
-    "p50_ms": 5.071550000138814,
-    "p95_ms": 6.224569996993521,
-    "p99_ms": 6.93650900167995,
-    "mean_ms": 5.169909999094671
+    "p50_ms": 4.534050000074785,
+    "p95_ms": 5.655000000297149,
+    "p99_ms": 6.04468800003815,
+    "mean_ms": 4.656110000651097,
+    "strategies": {
+      "personalized": 50
+    }
   },
   "post_recommend_via_localhost": {
     "requests": 50,
-    "p50_ms": 47.987750003812835,
-    "p95_ms": 49.513395004032645,
-    "p99_ms": 50.00641299782728,
-    "mean_ms": 48.008415999938734
+    "p50_ms": 47.71200000141107,
+    "p95_ms": 51.55254500077717,
+    "p99_ms": 54.890445999481,
+    "mean_ms": 47.913120000157505
   },
   "machine": {
-    "platform": "Windows-11-10.0.26200-SP0",
+    "platform": "Windows-11-10.0.26300-SP0",
     "processor": "Intel64 Family 6 Model 158 Stepping 10, GenuineIntel",
     "logical_cpus": 8,
     "ram_gb": 15.9,

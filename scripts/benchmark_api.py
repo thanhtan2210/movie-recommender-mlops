@@ -40,11 +40,15 @@ def summarise(seconds: List[float]) -> Dict[str, float]:
             "p99_ms": float(np.percentile(ms, 99)), "mean_ms": float(ms.mean())}
 
 
-def timed(client: httpx.Client, method: str, url: str, **kwargs) -> float:
+def timed(client: httpx.Client, method: str, url: str, strategies: Optional[Dict[str, int]] = None, **kwargs) -> float:
+    """Seconds taken by one request; the strategy of the answer is tallied in `strategies`."""
     started = time.perf_counter()
     response = client.request(method, url, **kwargs)
     elapsed = time.perf_counter() - started
     response.raise_for_status()
+    if strategies is not None:
+        strategy = response.json()["strategy"]
+        strategies[strategy] = strategies.get(strategy, 0) + 1
     return elapsed
 
 
@@ -74,6 +78,10 @@ def machine_info() -> Dict[str, Any]:
 def run(url: str, model_dir: str, server: str, compare_localhost: bool = False) -> Dict[str, Any]:
     with np.load(state_path(model_dir)) as state:
         user_ids, movie_ids = state["user_ids"], state["item_ids"]
+        # Users the model can personalise for: at least one liked rating inside its training window.
+        with_recent_likes = int((np.diff(state["liked_indptr"]) > 0).sum()) if "liked_indptr" in state.files else None
+    get_strategies: Dict[str, int] = {}
+    post_strategies: Dict[str, int] = {}
     rng = np.random.default_rng(SEED)
     users = rng.choice(user_ids, size=WARMUP_REQUESTS + GET_REQUESTS, replace=False).tolist()
     bodies = [{"liked_movie_ids": rng.choice(movie_ids, size=int(rng.integers(5, 21)), replace=False).tolist(),
@@ -83,9 +91,9 @@ def run(url: str, model_dir: str, server: str, compare_localhost: bool = False) 
         health = client.get("/health").raise_for_status().json()
         for user in users[:WARMUP_REQUESTS]:
             timed(client, "GET", f"/recommend/{user}", params={"n": TOP_N})
-        get_seconds = [timed(client, "GET", f"/recommend/{user}", params={"n": TOP_N})
+        get_seconds = [timed(client, "GET", f"/recommend/{user}", get_strategies, params={"n": TOP_N})
                        for user in users[WARMUP_REQUESTS:]]
-        post_seconds = [timed(client, "POST", "/recommend", json=body) for body in bodies]
+        post_seconds = [timed(client, "POST", "/recommend", post_strategies, json=body) for body in bodies]
 
     via_localhost = None
     if compare_localhost:
@@ -98,11 +106,12 @@ def run(url: str, model_dir: str, server: str, compare_localhost: bool = False) 
         "url": url,
         "server": server,
         "model": {"version": health["model_version"], "cutoff": health["cutoff"],
-                  "users": int(len(user_ids)), "movies": int(len(movie_ids))},
+                  "users": int(len(user_ids)), "users_with_liked_ratings_in_window": with_recent_likes,
+                  "movies": int(len(movie_ids))},
         "protocol": {"seed": SEED, "warmup_requests_not_counted": WARMUP_REQUESTS, "n": TOP_N,
                      "sequential": True, "measured": "client side, one keep-alive connection"},
-        "get_recommend_user": summarise(get_seconds),
-        "post_recommend": summarise(post_seconds),
+        "get_recommend_user": {**summarise(get_seconds), "strategies": get_strategies},
+        "post_recommend": {**summarise(post_seconds), "strategies": post_strategies},
         "post_recommend_via_localhost": via_localhost,
         "machine": machine_info(),
     }

@@ -72,6 +72,15 @@ def test_unknown_user_gets_the_popularity_fallback(client):
     assert ids(response) == [50, 10, 20]
 
 
+def test_known_user_without_recent_likes_is_reported_as_popularity_fallback(client):
+    """User 7 only has a like from long before the training window, and rated movie 20 recently."""
+    response = client.get("/recommend/7", params={"n": 3})
+
+    assert response.status_code == 200
+    assert response.json()["strategy"] == "popularity_fallback"
+    assert ids(response) == [50, 30, 40]                # the popularity order, minus the rated movies 10 and 20
+
+
 def test_n_defaults_to_ten_and_fewer_items_come_back_when_the_catalogue_runs_out(client):
     response = client.get("/recommend/1")
 

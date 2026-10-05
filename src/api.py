@@ -17,7 +17,6 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-import numpy as np
 from fastapi import FastAPI, Query, Request
 from pydantic import BaseModel, Field
 
@@ -76,11 +75,6 @@ class ServingModel:
         self.recommender: Recommender = RECOMMENDER_TYPES[self.meta["model_type"]].load_state(state_path(model_dir))
         self.loaded_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    def knows(self, user_id: int) -> bool:
-        users = self.recommender.user_ids
-        position = min(int(np.searchsorted(users, user_id)), len(users) - 1)
-        return bool(users[position] == user_id)
-
     def items(self, movie_ids) -> List[Item]:
         picked = []
         for movie_id in movie_ids:
@@ -130,9 +124,14 @@ def health(request: Request) -> Health:
 
 @app.get("/recommend/{user_id}", response_model=UserRecommendations)
 def recommend_for_user(request: Request, user_id: int, n: int = Query(default=10, ge=1, le=MAX_N)) -> UserRecommendations:
-    """Top-n for a user id. A user unknown to the training data gets the popularity list."""
+    """Top-n for a user id.
+
+    `personalized` when the model has liked ratings of this user inside its training
+    window. Otherwise `popularity_fallback`: the popularity list, still without the
+    movies the user is known to have rated.
+    """
     serving: ServingModel = request.app.state.serving
-    strategy = PERSONALIZED if serving.knows(user_id) else POPULARITY_FALLBACK
+    strategy = PERSONALIZED if serving.recommender.personalises(user_id) else POPULARITY_FALLBACK
     request.state.strategy, request.state.n = strategy, n
     movie_ids = serving.recommender.recommend([user_id], n)[0]
     return UserRecommendations(user_id=user_id, strategy=strategy, items=serving.items(movie_ids))

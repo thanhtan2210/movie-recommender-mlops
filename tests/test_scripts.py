@@ -58,6 +58,9 @@ def test_benchmark_measures_the_requested_number_of_calls(tmp_path, monkeypatch)
         report = benchmark_api.run("http://testserver", str(out), "in-process test")
 
     assert report["get_recommend_user"]["requests"] == 30
+    assert report["get_recommend_user"]["strategies"] == {"personalized": 30}   # every dummy user has recent likes
+    assert report["post_recommend"]["strategies"] == {"personalized": 10}
+    assert report["model"]["users_with_liked_ratings_in_window"] == report["model"]["users"] == 60
     assert report["post_recommend"]["requests"] == 10
     assert report["protocol"]["warmup_requests_not_counted"] == 5
     assert report["model"]["version"] == "dummy" and report["machine"]["logical_cpus"] >= 1

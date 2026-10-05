@@ -46,6 +46,18 @@ class Recommender(mlflow.pyfunc.PythonModel):
         """Top-n movie columns for users known from training (rows of the matrices)."""
         raise NotImplementedError
 
+    def row_of(self, user_id: int) -> Optional[int]:
+        """The user's row in the training matrices, or None for a user unknown to the training data."""
+        position = min(int(np.searchsorted(self.user_ids, user_id)), len(self.user_ids) - 1)
+        return position if self.user_ids[position] == user_id else None
+
+    def personalises(self, user_id: int) -> bool:
+        """Whether recommend() uses something the model learned about this user's taste.
+
+        False means the user gets the popularity ranking (minus what they rated, if known).
+        """
+        return False
+
     def recommend_columns(self, user_ids, n: int = 10) -> np.ndarray:
         """Like recommend(), but returns movie columns instead of movieIds."""
         user_ids = np.asarray(user_ids).ravel()

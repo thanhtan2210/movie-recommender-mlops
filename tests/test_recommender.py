@@ -93,6 +93,14 @@ def test_a_user_with_no_liked_movie_in_the_window_gets_popularity_minus_rated(bl
     assert blend.recommend([7], n=3).tolist() == [[50, 30, 40]]
 
 
+def test_personalises_only_with_liked_ratings_in_the_window(blend, popularity):
+    assert blend.personalises(6) is True
+    assert blend.personalises(7) is False        # known, but the only like is older than the window
+    assert blend.personalises(999) is False      # unknown
+    assert popularity.personalises(6) is False   # the baseline never personalises
+    assert blend.row_of(999) is None and blend.row_of(1) == 0
+
+
 def test_empty_slots_are_marked(popularity):
     assert popularity.recommend([1], n=4).tolist() == [[30, 40, NO_RECOMMENDATION, NO_RECOMMENDATION]]
 
