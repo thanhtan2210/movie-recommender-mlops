@@ -1,28 +1,29 @@
 # Python
+.venv/
 __pycache__/
 *.py[cod]
-*$py.class
+.pytest_cache/
+.ruff_cache/
+
+# Secrets
 .env
-.venv
-env/
-venv/
 
-# Dataset (Big Data - Do not commit)
-dataset/
-dataset/**
-ml-25m/
+# Data and experiment output (kept on R2 / MLflow, never in git)
+data/
+mlruns/
 
-# Logs & OS
+# Logs, OS, IDE
 *.log
 .DS_Store
 Thumbs.db
-.ipynb_checkpoints/
-
-# IDE
 .vscode/
 .idea/
 
-.pytest_cache.
-.env
-.pytest_cache/
-big_data_mlops_system.egg-info
+# Trained models (rebuilt by src.train)
+artifacts/
+
+# Local MLflow store (used when DagsHub is not configured)
+mlflow.db
+
+# The exported champion, copied into the Docker image at build time
+serving_model/

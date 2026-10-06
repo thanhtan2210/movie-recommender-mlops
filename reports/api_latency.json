@@ -1,0 +1,65 @@
+{
+  "url": "http://127.0.0.1:8000",
+  "server": "Docker container on the same machine",
+  "model": {
+    "version": "2",
+    "cutoff": "2019-07-01",
+    "users": 160199,
+    "users_with_liked_ratings_in_window": 11567,
+    "share_of_users_with_liked_ratings_in_window": 0.07220394634173746,
+    "movies": 12930
+  },
+  "protocol": {
+    "seed": 42,
+    "warmup_requests_not_counted": 20,
+    "n": 10,
+    "sequential": true,
+    "measured": "client side, one keep-alive connection"
+  },
+  "get_recommend_user": {
+    "personalized": {
+      "requests": 200,
+      "p50_ms": 4.639300001144875,
+      "p95_ms": 6.345174998568836,
+      "p99_ms": 7.04933800632716,
+      "mean_ms": 4.845514000044204,
+      "strategies": {
+        "personalized": 200
+      }
+    },
+    "popularity_fallback": {
+      "requests": 200,
+      "p50_ms": 5.287150001095142,
+      "p95_ms": 6.73330999270547,
+      "p99_ms": 7.650245004188033,
+      "mean_ms": 5.342367500270484,
+      "strategies": {
+        "popularity_fallback": 200
+      }
+    }
+  },
+  "post_recommend": {
+    "requests": 50,
+    "p50_ms": 5.237849996774457,
+    "p95_ms": 6.716765002784085,
+    "p99_ms": 7.273957006254932,
+    "mean_ms": 5.415797999012284,
+    "strategies": {
+      "personalized": 50
+    }
+  },
+  "post_recommend_via_localhost": {
+    "requests": 50,
+    "p50_ms": 47.654050002165604,
+    "p95_ms": 49.88102000497747,
+    "p99_ms": 54.18238899626885,
+    "mean_ms": 47.42362400051206
+  },
+  "machine": {
+    "platform": "Windows-11-10.0.26300-SP0",
+    "processor": "Intel64 Family 6 Model 158 Stepping 10, GenuineIntel",
+    "logical_cpus": 8,
+    "ram_gb": 15.9,
+    "python": "3.13.15"
+  }
+}

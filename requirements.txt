@@ -1,13 +1,17 @@
-streamlit==1.41.0
-lancedb>=0.26.0
-pylance
-sentence-transformers==2.7.0
+# Python 3.13
+pandas==3.0.6
+numpy==2.5.3
+pyarrow==25.0.1
+scipy==1.17.1
+scikit-learn==1.9.1
+mlflow==3.16.1
 boto3==1.43.8
-pandas==2.2.0
-numpy==1.26.4
-groq>=0.11.0
-httpx==0.27.2
-python-dotenv
-pandera>=0.18.0
-pytest-mock
-pytest-cov
+PyYAML==6.0.3
+python-dotenv==1.2.4
+fastapi==0.142.2
+pydantic==2.13.5
+uvicorn==0.54.0
+
+# tests and the API benchmark
+pytest==9.1.1
+httpx==0.28.1

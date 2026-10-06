@@ -1,0 +1,112 @@
+{
+  "cutoff": "2019-07-01",
+  "production_window_utc": {
+    "from": "2019-07-01T00:00:00Z",
+    "to_exclusive": "2019-07-31T00:00:00Z"
+  },
+  "models_trained_on": "ratings before 2019-07-01",
+  "evaluated_users": 1475,
+  "liked_ratings": 9880,
+  "champion": {
+    "model_type": "blend",
+    "registry_model": "movie-recommender",
+    "registry_version": "2",
+    "marked_as_champion_by": "alias",
+    "k": 64,
+    "train_window": "1y",
+    "blend_weight": 4.0,
+    "random_state": 42,
+    "hit_rate_at_10": {
+      "value": 0.27661016949152545,
+      "ci95_low": 0.2535593220338983,
+      "ci95_high": 0.30101694915254235
+    },
+    "recall_at_10": {
+      "value": 0.1050575733118106,
+      "ci95_low": 0.09316896018294324,
+      "ci95_high": 0.11695067931127251
+    },
+    "ndcg_at_10": {
+      "value": 0.08314966835040698,
+      "ci95_low": 0.07397779800967177,
+      "ci95_high": 0.09198637434384849
+    },
+    "long_tail_share": {
+      "value": 0.26454237288135596,
+      "ci95_low": 0.2500322033898305,
+      "ci95_high": 0.2790508474576271
+    },
+    "catalog_coverage": {
+      "value": 0.033952049497293114,
+      "distinct_movies": 439
+    }
+  },
+  "popularity": {
+    "hit_rate_at_10": {
+      "value": 0.22440677966101694,
+      "ci95_low": 0.20271186440677966,
+      "ci95_high": 0.2454237288135593
+    },
+    "recall_at_10": {
+      "value": 0.0888587570621469,
+      "ci95_low": 0.07794712806026366,
+      "ci95_high": 0.10008498789346246
+    },
+    "ndcg_at_10": {
+      "value": 0.0710717210737022,
+      "ci95_low": 0.062811107783247,
+      "ci95_high": 0.0803629534778172
+    },
+    "long_tail_share": {
+      "value": 0.17152542372881355,
+      "ci95_low": 0.16758983050847456,
+      "ci95_high": 0.17566101694915254
+    },
+    "catalog_coverage": {
+      "value": 0.017014694508894045,
+      "distinct_movies": 220
+    }
+  },
+  "difference_champion_minus_popularity": {
+    "hit_rate_at_10": {
+      "value": 0.05220338983050848,
+      "ci95_low": 0.031186440677966103,
+      "ci95_high": 0.07254237288135593
+    },
+    "recall_at_10": {
+      "value": 0.016198816249663708,
+      "ci95_low": 0.005771347861178371,
+      "ci95_high": 0.027016949152542373
+    },
+    "ndcg_at_10": {
+      "value": 0.012077947276704774,
+      "ci95_low": 0.004386313868567607,
+      "ci95_high": 0.01930182953283359
+    },
+    "long_tail_share": {
+      "value": 0.09301694915254241,
+      "ci95_low": 0.07816610169491524,
+      "ci95_high": 0.1081372881355932
+    },
+    "catalog_coverage": {
+      "value": 0.01693735498839907
+    }
+  },
+  "mlflow": {
+    "tracking": "https://dagshub.com/thanhtan2210/Big-Data-MLOps-System.mlflow",
+    "experiment": "movie-recommender",
+    "run_ids": {
+      "champion": "8ee6dd248ea649a9b5a4459392a72b95",
+      "popularity": "85fceff80af341469fb30abc79c84e9f"
+    }
+  },
+  "r2_upload": {
+    "train.parquet": "uploaded",
+    "test.parquet": "uploaded",
+    "movies.parquet": "uploaded",
+    "stats.json": "uploaded"
+  },
+  "train_sha256": "73edf488a364c5408c7522856e76e85e24410f9a9884a227f840d622cbd82d10",
+  "git_commit": "1e5e70066b8b03c19ca984b40c92e05840135ab3",
+  "git_uncommitted_changes": false
+}

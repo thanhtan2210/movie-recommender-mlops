@@ -1,0 +1,5 @@
+min_item_ratings: 50        # a movie needs >= 50 ratings IN THE TRAINING SET
+positive_threshold: 4.0     # rating >= 4.0 counts as "liked"
+test_window_days: 30        # test = the 30 days right after the cutoff
+min_user_train_positives: 5 # a user needs >= 5 liked movies in train to be evaluated
+cutoff: "2019-06-01"

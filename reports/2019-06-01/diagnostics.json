@@ -1,0 +1,142 @@
+{
+  "cutoff": "2019-06-01",
+  "k": 64,
+  "evaluated_users": 1407,
+  "new_means_release_year_from": 2018,
+  "catalog": {
+    "movies": 12873,
+    "without_year": 15,
+    "share_released_from_2018": 0.016954425260538187,
+    "median_year": 1999.0,
+    "movies_in_head": 2575,
+    "new_movies_in_head": 3,
+    "new_movies": 218
+  },
+  "release_year": {
+    "train_liked_ratings_all_time": {
+      "movies": 12068570,
+      "without_year": 4793,
+      "share_released_from_2018": 0.0024771678057377883,
+      "median_year": 1996.0
+    },
+    "train_liked_ratings_last_90_days": {
+      "movies": 163071,
+      "without_year": 772,
+      "share_released_from_2018": 0.05473231504815187,
+      "median_year": 2004.0
+    },
+    "test_targets": {
+      "movies": 9727,
+      "without_year": 82,
+      "share_released_from_2018": 0.1215137376879212,
+      "median_year": 2007.0
+    },
+    "pure_svd_top_10": {
+      "movies": 14070,
+      "without_year": 0,
+      "share_released_from_2018": 0.0007107320540156361,
+      "median_year": 2002.0
+    },
+    "popularity_top_10": {
+      "movies": 14070,
+      "without_year": 33,
+      "share_released_from_2018": 0.22718529600341952,
+      "median_year": 2006.0
+    }
+  },
+  "by_target_age": {
+    "new": {
+      "pure_svd": {
+        "users": 614,
+        "targets": 1172,
+        "hit_rate_at_10": {
+          "value": 0.003257328990228013,
+          "ci95_low": 0.0,
+          "ci95_high": 0.008143322475570033
+        },
+        "recall_at_10": {
+          "value": 0.000488599348534202,
+          "ci95_low": 0.0,
+          "ci95_high": 0.0013029315960912053
+        }
+      },
+      "popularity": {
+        "users": 614,
+        "targets": 1172,
+        "hit_rate_at_10": {
+          "value": 0.28501628664495116,
+          "ci95_low": 0.24914495114006516,
+          "ci95_high": 0.31763029315960906
+        },
+        "recall_at_10": {
+          "value": 0.18820058425107283,
+          "ci95_low": 0.16171665761853057,
+          "ci95_high": 0.21465066116022954
+        }
+      }
+    },
+    "old": {
+      "pure_svd": {
+        "users": 1220,
+        "targets": 8555,
+        "hit_rate_at_10": {
+          "value": 0.2483606557377049,
+          "ci95_low": 0.22540983606557377,
+          "ci95_high": 0.27295081967213114
+        },
+        "recall_at_10": {
+          "value": 0.09258912308092636,
+          "ci95_low": 0.0804474287665886,
+          "ci95_high": 0.1044326128675514
+        }
+      },
+      "popularity": {
+        "users": 1220,
+        "targets": 8555,
+        "hit_rate_at_10": {
+          "value": 0.14016393442622951,
+          "ci95_low": 0.12049180327868853,
+          "ci95_high": 0.1598360655737705
+        },
+        "recall_at_10": {
+          "value": 0.048337887067395266,
+          "ci95_low": 0.03942648972157169,
+          "ci95_high": 0.05781454104865989
+        }
+      }
+    }
+  },
+  "long_tail_share": {
+    "pure_svd": {
+      "all_recommendations": {
+        "recommendations": 14070,
+        "long_tail_share": 0.0014925373134328358
+      },
+      "excluding_movies_from_2018": {
+        "recommendations": 14060,
+        "long_tail_share": 0.001422475106685633
+      },
+      "only_movies_from_2018": {
+        "recommendations": 10,
+        "long_tail_share": 0.1
+      }
+    },
+    "popularity": {
+      "all_recommendations": {
+        "recommendations": 14070,
+        "long_tail_share": 0.17690120824449182
+      },
+      "excluding_movies_from_2018": {
+        "recommendations": 10881,
+        "long_tail_share": 0.0030328094844223876
+      },
+      "only_movies_from_2018": {
+        "recommendations": 3189,
+        "long_tail_share": 0.7701473816243336
+      }
+    }
+  },
+  "model_item_factors_sha256": "94115539a7dee11666f41eef12fb5f0e132a5de9b1a22bdbf1e5a30274ea05ba",
+  "git_commit": "cd9683711945d798e83d1d9949728520e51f360b",
+  "git_uncommitted_changes": false
+}
