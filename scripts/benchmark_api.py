@@ -3,9 +3,13 @@
   docker run -p 8000:8000 movie-rec
   python -m scripts.benchmark_api
 
-Sends 200 GET /recommend/{user_id} for real user ids drawn at random (seed 42)
-and 50 POST /recommend with 5-20 random catalogue movies each, after 20
-warm-up requests that are not counted. Writes reports/api_latency.json.
+After 20 warm-up requests that are not counted, sends GET /recommend/{user_id}
+to two groups of real users drawn at random (seed 42), 200 each:
+  - users with at least one liked rating in the model's training window,
+    who get `personalized` recommendations;
+  - the other users of the training data, who get `popularity_fallback`;
+then 50 POST /recommend with 5-20 random catalogue movies each.
+Latency is reported per group. Writes reports/api_latency.json.
 
 The default URL uses 127.0.0.1, not localhost: on Docker Desktop for Windows,
 a POST sent to `localhost` goes through the IPv6 loopback proxy and takes
@@ -75,24 +79,35 @@ def machine_info() -> Dict[str, Any]:
             "ram_gb": total_ram_gb(), "python": platform.python_version()}
 
 
+def split_users(user_ids: np.ndarray, liked_indptr: np.ndarray) -> Dict[str, np.ndarray]:
+    """Users with at least one liked rating inside the training window, and the others."""
+    has_likes = np.diff(liked_indptr) > 0
+    return {"personalized": user_ids[has_likes], "popularity_fallback": user_ids[~has_likes]}
+
+
 def run(url: str, model_dir: str, server: str, compare_localhost: bool = False) -> Dict[str, Any]:
     with np.load(state_path(model_dir)) as state:
         user_ids, movie_ids = state["user_ids"], state["item_ids"]
-        # Users the model can personalise for: at least one liked rating inside its training window.
-        with_recent_likes = int((np.diff(state["liked_indptr"]) > 0).sum()) if "liked_indptr" in state.files else None
-    get_strategies: Dict[str, int] = {}
-    post_strategies: Dict[str, int] = {}
+        groups = split_users(user_ids, state["liked_indptr"])
     rng = np.random.default_rng(SEED)
-    users = rng.choice(user_ids, size=WARMUP_REQUESTS + GET_REQUESTS, replace=False).tolist()
+    warmup_users = rng.choice(user_ids, size=min(WARMUP_REQUESTS, len(user_ids)), replace=False).tolist()
+    # A group smaller than GET_REQUESTS (as in a tiny test model) is measured with all its users.
+    sampled = {name: rng.choice(ids, size=min(GET_REQUESTS, len(ids)), replace=False).tolist()
+               for name, ids in groups.items()}
     bodies = [{"liked_movie_ids": rng.choice(movie_ids, size=int(rng.integers(5, 21)), replace=False).tolist(),
                "n": TOP_N} for _ in range(POST_REQUESTS)]
 
+    get_by_group: Dict[str, Optional[Dict[str, Any]]] = {}
+    post_strategies: Dict[str, int] = {}
     with httpx.Client(base_url=url, timeout=30.0) as client:
         health = client.get("/health").raise_for_status().json()
-        for user in users[:WARMUP_REQUESTS]:
+        for user in warmup_users:
             timed(client, "GET", f"/recommend/{user}", params={"n": TOP_N})
-        get_seconds = [timed(client, "GET", f"/recommend/{user}", get_strategies, params={"n": TOP_N})
-                       for user in users[WARMUP_REQUESTS:]]
+        for name, users in sampled.items():
+            strategies: Dict[str, int] = {}
+            seconds = [timed(client, "GET", f"/recommend/{user}", strategies, params={"n": TOP_N}) for user in users]
+            # `strategies` records what the API answered, which should be the group's name.
+            get_by_group[name] = {**summarise(seconds), "strategies": strategies} if users else None
         post_seconds = [timed(client, "POST", "/recommend", post_strategies, json=body) for body in bodies]
 
     via_localhost = None
@@ -106,11 +121,13 @@ def run(url: str, model_dir: str, server: str, compare_localhost: bool = False) 
         "url": url,
         "server": server,
         "model": {"version": health["model_version"], "cutoff": health["cutoff"],
-                  "users": int(len(user_ids)), "users_with_liked_ratings_in_window": with_recent_likes,
+                  "users": int(len(user_ids)),
+                  "users_with_liked_ratings_in_window": int(len(groups["personalized"])),
+                  "share_of_users_with_liked_ratings_in_window": float(len(groups["personalized"]) / len(user_ids)),
                   "movies": int(len(movie_ids))},
         "protocol": {"seed": SEED, "warmup_requests_not_counted": WARMUP_REQUESTS, "n": TOP_N,
                      "sequential": True, "measured": "client side, one keep-alive connection"},
-        "get_recommend_user": {**summarise(get_seconds), "strategies": get_strategies},
+        "get_recommend_user": get_by_group,
         "post_recommend": {**summarise(post_seconds), "strategies": post_strategies},
         "post_recommend_via_localhost": via_localhost,
         "machine": machine_info(),
@@ -128,11 +145,12 @@ def main():
     args = parser.parse_args()
 
     report = run(args.url, args.model_dir, args.server, args.compare_localhost)
-    for name in ("get_recommend_user", "post_recommend", "post_recommend_via_localhost"):
-        s = report[name]
+    rows = {f"get_recommend_user ({group})": stats for group, stats in report["get_recommend_user"].items()}
+    rows.update({name: report[name] for name in ("post_recommend", "post_recommend_via_localhost")})
+    for name, s in rows.items():
         if s is None:
             continue
-        print(f"  {name:<30} n={s['requests']:>3}  p50 {s['p50_ms']:7.2f} ms | p95 {s['p95_ms']:7.2f} ms | "
+        print(f"  {name:<45} n={s['requests']:>3}  p50 {s['p50_ms']:7.2f} ms | p95 {s['p95_ms']:7.2f} ms | "
               f"p99 {s['p99_ms']:7.2f} ms")
     os.makedirs(os.path.dirname(REPORT_PATH), exist_ok=True)
     with open(REPORT_PATH, "w", encoding="utf-8") as f:

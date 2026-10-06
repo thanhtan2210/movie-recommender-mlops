@@ -1,6 +1,7 @@
 """The helper scripts: the synthetic model used to build the image in CI, and the latency summary."""
 import sys
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
@@ -57,13 +58,23 @@ def test_benchmark_measures_the_requested_number_of_calls(tmp_path, monkeypatch)
         monkeypatch.setattr(benchmark_api.httpx, "Client", lambda **kwargs: _Passthrough(client))
         report = benchmark_api.run("http://testserver", str(out), "in-process test")
 
-    assert report["get_recommend_user"]["requests"] == 30
-    assert report["get_recommend_user"]["strategies"] == {"personalized": 30}   # every dummy user has recent likes
+    # Every dummy user has recent likes, so the fallback group is empty.
+    assert report["get_recommend_user"]["personalized"]["requests"] == 30
+    assert report["get_recommend_user"]["personalized"]["strategies"] == {"personalized": 30}
+    assert report["get_recommend_user"]["popularity_fallback"] is None
     assert report["post_recommend"]["strategies"] == {"personalized": 10}
     assert report["model"]["users_with_liked_ratings_in_window"] == report["model"]["users"] == 60
+    assert report["model"]["share_of_users_with_liked_ratings_in_window"] == 1.0
     assert report["post_recommend"]["requests"] == 10
     assert report["protocol"]["warmup_requests_not_counted"] == 5
     assert report["model"]["version"] == "dummy" and report["machine"]["logical_cpus"] >= 1
+
+
+def test_users_are_split_by_liked_ratings_in_the_window():
+    groups = benchmark_api.split_users(np.array([3, 5, 8, 9]), np.array([0, 2, 2, 3, 3]))
+
+    assert groups["personalized"].tolist() == [3, 8]
+    assert groups["popularity_fallback"].tolist() == [5, 9]
 
 
 class _Passthrough:

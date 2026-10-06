@@ -14,7 +14,7 @@ Experiment and model registry: [MLflow on DagsHub](https://dagshub.com/thanhtan2
 
 **Approach.** MovieLens 25M, split by time. The model is a truncated SVD of the user × movie "liked" matrix blended with recent popularity; the baseline is recent popularity alone. One command runs a monthly cycle: prepare the data, compare challenger and champion on the last 30 days of training data (the gate), promote only if the challenger is better with 95% confidence, refit the winner, register it in MLflow, and score it on the following 30 days. The champion is served by a small API in a Docker image.
 
-**Results.** On July 2019, a month no modelling decision had looked at, the model reaches HitRate@10 27.7% against 22.4% for popularity and NDCG@10 0.0831 against 0.0711 (paired difference +0.0121, 95% interval [+0.0044, +0.0193], 1,475 users). The API answers a recommendation request in under 5 ms (median, measured from the client).
+**Results.** On July 2019, a month no modelling decision had looked at, the model reaches HitRate@10 27.7% against 22.4% for popularity and NDCG@10 0.0831 against 0.0711 (paired difference +0.0121, 95% interval [+0.0044, +0.0193], 1,475 users). The API answers a recommendation request in about 5 ms (median, measured from the client).
 
 ## Results
 
@@ -56,10 +56,13 @@ The champion (version 2: 160,199 users, 12,930 movies) served from the Docker im
 
 | Request | Requests | p50 | p95 | p99 |
 | --- | --- | --- | --- | --- |
-| `GET /recommend/{user_id}` (random real users, seed 42; 11 `personalized`, 189 `popularity_fallback`) | 200 | 4.4 ms | 5.5 ms | 7.3 ms |
-| `POST /recommend` (5-20 random liked movies; all `personalized`) | 50 | 4.5 ms | 5.7 ms | 6.0 ms |
+| `GET /recommend/{user_id}`, users with likes in the training window → `personalized` | 200 | 4.6 ms | 6.3 ms | 7.0 ms |
+| `GET /recommend/{user_id}`, other users of the training data → `popularity_fallback` | 200 | 5.3 ms | 6.7 ms | 7.7 ms |
+| `POST /recommend` (5-20 random liked movies; all `personalized`) | 50 | 5.2 ms | 6.7 ms | 7.3 ms |
 
-Machine: Windows 11, Intel x86-64 with 8 logical CPUs, 15.9 GB RAM, Docker Desktop. No concurrent load was applied. Two things changed the numbers during measurement and are fixed or recorded: the container is pinned to one linear-algebra thread (with one thread per core the same requests were several times slower), and requests go to `127.0.0.1` (through the host name `localhost`, Docker Desktop's loopback proxy adds about 43 ms to each POST: median 47.7 ms).
+Users of each group are drawn at random (seed 42); every answer carried the strategy of its group.
+
+Machine: Windows 11, Intel x86-64 with 8 logical CPUs, 15.9 GB RAM, Docker Desktop. No concurrent load was applied. Two things changed the numbers during measurement and are fixed or recorded: the container is pinned to one linear-algebra thread (with one thread per core the same requests were several times slower), and requests go to `127.0.0.1` (through the host name `localhost`, Docker Desktop's loopback proxy adds about 42 ms to each POST: median 47.7 ms).
 
 The image is 1.41 GB, most of it the Python packages; the model state is 40 MB.
 
@@ -133,7 +136,7 @@ Credentials for R2 and DagsHub go in a `.env` file ([.env.example](.env.example)
 - **Accuracy costs variety.** The champion recommends 439 distinct movies across 1,475 users; plain SVD covered about twice as many in the June test.
 - **Offline metrics on ratings**, which are not viewing behaviour and do not replace an online test.
 - **A gate between identical models is a no-op.** Once the champion is the blend, the challenger has the same type and frozen parameters, so later gates only confirm and refit it until a different challenger exists.
-- **Most known users get the popularity fallback.** The model only uses liked ratings of the last year: 11,567 of the 160,199 users in the training data (7.2%, counted by `scripts/benchmark_api.py` in [api_latency.json](reports/api_latency.json)) have one and get `personalized` recommendations. The others receive the recent-popularity list minus the movies they already rated, and the API says so (`popularity_fallback`).
+- **Most known users get the popularity fallback.** Only users with at least one like in the 12-month training window (7.2% of users: 11,567 of 160,199, `share_of_users_with_liked_ratings_in_window` in [api_latency.json](reports/api_latency.json)) get personalized lists; the rest receive the popularity list, minus the movies they already rated. This follows the diagnosis that older tastes predicted the next month poorly. A fallback that uses full-history SVD for dormant users is a possible improvement and has not been evaluated.
 - **Latency was measured without concurrent load**, on one laptop, with client and container on the same machine.
 - **Results depend slightly on the environment.** The reports in `reports/2019-06-01/` and `reports/2019-07-01/` were produced on Python 3.11 with NumPy 1.26. On the current pins (Python 3.13, NumPy 2.5) the prepared data is byte-identical, but retraining at cutoff 2019-06-01 gives NDCG@10 0.08467 instead of 0.08463: a different linear-algebra library changes a few near-ties.
 
